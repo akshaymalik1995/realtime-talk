@@ -20,6 +20,7 @@ from websockets.exceptions import ConnectionClosed
 
 from app import cascade, providers, realtime, registry, server, settings, store
 from app.metrics import METRICS
+from app.domain import numbers
 from app.session import Session
 from app.verification import Otp, SimulatedSms
 
@@ -169,7 +170,18 @@ async def check_session():
     assert sum(e["type"] == "sms" for e in events) == 3 and desk[-1]["state"]["code_pending_for"] == "verification"
     assert "Today is" in ses.instructions() and "- book_appointment:" in ses.instructions()
     assert METRICS.get("tool_calls_total", skill="book_appointment", status="booked") >= 1
-    print("session ok")
+
+    async def misheard():  # the model adds a digit; the caller's words (arriving 0.3 s late) hold the real number
+        heard = Session(s, "front_desk", now=lambda: fixed)
+        heard.hear("input_audio_buffer.speech_stopped", "")
+        asyncio.get_running_loop().call_later(0.3, heard.hear, "user_said", "नंबर है नौ आठ चार पाँच शून्य एक दो तीन छह सात")
+        wrong = await heard.run_tool("verify_patient", json.dumps({"phone": "98450012367"}))
+        heard.hear("user_said", "nine eight four five zero one two three six six")
+        kept = await heard.run_tool("verify_patient", json.dumps({"phone": "9845012366"}))  # plausible: kept
+        return wrong, kept
+    wrong, kept = _sync(misheard())
+    assert wrong["status"] == "code_sent" and kept["status"] == "not_found", (wrong, kept)
+    print("session ok: guards, codes, the SMS cap, digits from the caller's words")
 
 
 async def check_resume():
@@ -423,7 +435,7 @@ async def check_cascade():
                        ("nine eight four five zero one two three double seven", "9845012377"),
                        ("मुझे एक अपॉइंटमेंट चाहिए", "मुझे एक अपॉइंटमेंट चाहिए"), ("slots at 10, 11", "slots at 10, 11"),
                        ("one two", "one two"), ("एकदम सही", "एकदम सही")]:
-        assert cascade.spoken_digits(said) == want, (said, cascade.spoken_digits(said))
+        assert numbers.spoken_digits(said) == want, (said, numbers.spoken_digits(said))
     # 1. a tool call, the filler, and a text-to-speech stall that is retried
     call = {"id": "c1", "name": "verify_patient", "arguments": json.dumps({"phone": "9845012367"})}
     parts, rec = fake_parts([(0.05, "speech_started", ""), (0.05, "speech_stopped", ""),

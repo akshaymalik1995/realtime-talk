@@ -170,6 +170,7 @@ class App:
             return ws
 
         def on_note(t, event, detail):
+            session.hear(event, str(detail))  # the caller's words: evidence for digits in tool arguments
             out.put_nowait({"type": "log", "t": t, "event": event, "detail": str(detail)})
 
         sender = asyncio.create_task(to_browser())

@@ -17,45 +17,11 @@ import logging
 import re
 import time
 
+from app.domain.numbers import spoken_digits
 from app.realtime import BYTES_PER_S, DROPPED, FILLER_TEXT, Stalled
 
 log = logging.getLogger(__name__)
 SENTENCE_END = re.compile(r"(?<=[.!?।])\s+")  # । = Devanagari full stop
-
-# Spoken digits, 0-9, as callers say them (formal and everyday forms). ponytail: single digits only ("बारह" = 12 stays)
-DIGIT_WORDS = [
-    "zero oh शून्य शुन्य जीरो ज़ीरो பூஜ்ஜியம் பூஜ்யம் சைபர் ஜீரோ",
-    "one एक ஒன்று ஒன்னு",
-    "two दो இரண்டு ரெண்டு",
-    "three तीन மூன்று மூணு",
-    "four चार நான்கு நாலு",
-    "five पाँच पांच ஐந்து அஞ்சு",
-    "six छह छः छै छे ஆறு",
-    "seven सात ஏழு",
-    "eight आठ எட்டு",
-    "nine नौ ஒன்பது ஒம்பது",
-]
-DIGIT = {w: str(d) for d, words in enumerate(DIGIT_WORDS) for w in words.split()}
-REPEAT = {"double": 2, "डबल": 2, "டபுள்": 2, "triple": 3, "ट्रिपल": 3, "ட்ரிபிள்": 3}
-_d = "|".join(sorted(DIGIT, key=len, reverse=True)) + r"|\d+"
-_unit = rf"(?:(?:{'|'.join(REPEAT)})\s*)?(?:{_d})"
-_edge = r"\wऀ-ॣ०-෿"  # letters + Indic letters and vowel signs (not the । ॥ full stops)
-DIGIT_RUN = re.compile(rf"(?<![{_edge}]){_unit}(?:[\s,–-]+{_unit})*(?![{_edge}])", re.IGNORECASE)
-DIGIT_UNIT = re.compile(rf"(?:({'|'.join(REPEAT)})\s*)?({_d})", re.IGNORECASE)
-
-
-def spoken_digits(text: str) -> str:
-    """Numbers said digit by digit, in any language, become digits before the model reads them:
-    "नौ आठ चार पाँच" -> "9845", "nine double eight" -> "988". A text model turning number words into digits
-    itself gets them wrong (measured: Hindi words -> one digit wrong). Runs shorter than 3 digits stay words."""
-    def join(m):
-        units = DIGIT_UNIT.findall(m[0])
-        if not any(w.lower() in DIGIT for _, w in units):  # already digits ("10, 11"): leave as said
-            return m[0]
-        digits = "".join(DIGIT.get(w.lower(), w) * REPEAT.get(r.lower(), 1) for r, w in units)
-        return digits if len(digits) >= 3 else m[0]
-    return DIGIT_RUN.sub(join, text)
-
 
 def sentences(text: str) -> list[str]:
     return [p for p in SENTENCE_END.split(text.strip()) if p]
