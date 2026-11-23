@@ -7,12 +7,11 @@ schedule_appointment / cancel_appointment, services/appointment_service.py):
 - booking: a doctor, a date that isn't past, a free slot start (not already over today), a reason;
   one active booking per patient per doctor per day (DocAssist flags this; a voice desk refuses it);
 - cancelling: only the patient's own, only while "scheduled".
-All functions take the database path and return plain dicts for the model.
+All functions take a store (app/store.py Sqlite, app/docassist.py DocAssistStore): its connect() and its named SQL
+statements. The rules are the same for every store; only the SQL differs. They return plain dicts for the model.
 """
 import re
 from datetime import date, datetime
-
-from app.store import db
 
 STOP_WORDS = {"dr", "doctor", "the", "a", "with", "for", "and", "specialist"}
 
@@ -46,27 +45,27 @@ def parse_day(s: str) -> date | None:
         return None
 
 
-def _doctors(c) -> list[dict]:
+def _doctors(c, sql) -> list[dict]:
     out = []
-    for r in c.execute("SELECT Doctor_ID, First_Name, Last_Name, Specialty FROM Doctor ORDER BY Doctor_ID"):
-        days = [d[0] for d in c.execute("SELECT DISTINCT day FROM Availability WHERE doctor_id=?", (r[0],))]
+    for r in c.execute(sql["doctors"], ()).fetchall():  # id, first, last, specialty, working days (comma list)
+        days = (r[4] or "").split(",")
         week = [d for d in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday") if d in days]
         out.append({"id": r[0], "name": f"Dr. {r[1].title()} {r[2].title()}", "specialty": r[3], "days": week,
                     "_words": {r[1].lower(), r[2].lower(), *re.findall(r"[a-z]+", r[3].lower())}})
     return out
 
 
-def doctors(path) -> list[dict]:
-    with db(path) as c:
-        return [{k: v for k, v in d.items() if not k.startswith("_")} for d in _doctors(c)]
+def doctors(store) -> list[dict]:
+    with store.connect() as c:
+        return [{k: v for k, v in d.items() if not k.startswith("_")} for d in _doctors(c, store.SQL)]
 
 
-def find_doctor(c, query: str) -> tuple[dict | None, dict | None]:
+def find_doctor(c, sql, query: str) -> tuple[dict | None, dict | None]:
     """Resolve what the caller said ("Dr Kapoor", "the pediatrician", "cardiology") to exactly one doctor."""
     words = [w for w in re.findall(r"[a-z]+", query.lower()) if w not in STOP_WORDS]
     # prefixes, so "pediatrician" matches "pediatrics" and "cardio" matches "cardiology"
     hit = lambda d: any(dw.startswith(w[:6]) for w in words if len(w) >= 3 for dw in d["_words"])  # noqa: E731
-    docs = _doctors(c)
+    docs = _doctors(c, sql)
     found = [d for d in docs if words and hit(d)]
     if len(found) == 1:
         return found[0], None
@@ -77,16 +76,14 @@ def find_doctor(c, query: str) -> tuple[dict | None, dict | None]:
                   "doctors": [f"{d['name']} ({d['specialty']})" for d in found]}
 
 
-def _slots(c, doc: dict, day: date, now: datetime) -> dict:
+def _slots(c, sql, doc: dict, day: date, now: datetime) -> dict:
     """Free and taken slot starts for one doctor and day, or why the day is closed."""
     if day < now.date():
         return {"closed": "that date is in the past"}
-    hours = c.execute("SELECT start_time, end_time, duration_minutes FROM Availability WHERE doctor_id=? AND day=? "
-                      "ORDER BY start_time", (doc["id"], f"{day:%A}")).fetchall()
+    hours = c.execute(sql["hours"], (doc["id"], f"{day:%A}")).fetchall()
     if not hours:
         return {"closed": f"{doc['name']} does not work on {day:%A}s (works {', '.join(doc['days'])})"}
-    rows = c.execute("SELECT appointment_date, status, notes FROM Appointment WHERE doctor_id=? AND status!='cancelled' "
-                     "AND substr(appointment_date, 1, 10)=?", (doc["id"], day.isoformat())).fetchall()
+    rows = c.execute(sql["day_appointments"], (doc["id"], day.isoformat())).fetchall()
     busy, blocks = [], []
     for when, status, notes in rows:
         start = parse_time(when[11:16])
@@ -100,6 +97,8 @@ def _slots(c, doc: dict, day: date, now: datetime) -> dict:
     free, taken = [], []
     for start_s, end_s, dur in hours:
         m, end = parse_time(start_s), parse_time(end_s)
+        if m is None or end is None or not dur:  # unreadable hours in someone else's data: skip, don't crash
+            continue
         while m + dur <= end:
             clash = any(m < b + dur and b < m + dur for b in busy) or any(a <= m < b for a, b in blocks)
             past = day == now.date() and m <= now.hour * 60 + now.minute
@@ -108,16 +107,16 @@ def _slots(c, doc: dict, day: date, now: datetime) -> dict:
     return {"free": free, "taken": taken}
 
 
-def find_slots(path, doctor: str, day_s: str, now: datetime | None = None) -> dict:
+def find_slots(store, doctor: str, day_s: str, now: datetime | None = None) -> dict:
     now = now or datetime.now()
     day = parse_day(day_s)
     if not day:
         return {"status": "bad_date", "problem": "date must be YYYY-MM-DD"}
-    with db(path) as c:
-        doc, problem = find_doctor(c, doctor)
+    with store.connect() as c:
+        doc, problem = find_doctor(c, store.SQL, doctor)
         if problem:
             return problem
-        s = _slots(c, doc, day, now)
+        s = _slots(c, store.SQL, doc, day, now)
     if "closed" in s:
         return {"status": "closed", "doctor": doc["name"], "date": fmt_day(day), "problem": s["closed"]}
     return {"status": "ok", "doctor": doc["name"], "specialty": doc["specialty"], "date": fmt_day(day),
@@ -126,7 +125,7 @@ def find_slots(path, doctor: str, day_s: str, now: datetime | None = None) -> di
                     "or three free times. Never read the whole list."}
 
 
-def book(path, patient_id: int, doctor: str, day_s: str, time_s: str, reason: str,
+def book(store, patient_id: int, doctor: str, day_s: str, time_s: str, reason: str,
          now: datetime | None = None) -> dict:
     now = now or datetime.now()
     day, minutes, reason = parse_day(day_s), parse_time(time_s), " ".join(str(reason).split())[:200]
@@ -136,60 +135,51 @@ def book(path, patient_id: int, doctor: str, day_s: str, time_s: str, reason: st
         return {"status": "bad_time", "problem": "time must look like 9:15 AM or 14:30"}
     if not reason:
         return {"status": "need_reason", "problem": "ask what the visit is for"}
-    with db(path) as c:
-        c.execute("BEGIN IMMEDIATE")  # check + insert in one write transaction: two callers can't take one slot
-        doc, problem = find_doctor(c, doctor)
+    with store.connect(write=True) as c:  # check + insert in one write transaction
+        doc, problem = find_doctor(c, store.SQL, doctor)
         if problem:
             return problem
-        s = _slots(c, doc, day, now)
+        s = _slots(c, store.SQL, doc, day, now)
         if "closed" in s:
             return {"status": "closed", "problem": s["closed"]}
         if minutes not in s["free"]:
             return {"status": "slot_unavailable", "problem": f"{fmt_time(minutes)} is not free",
                     "free": [fmt_time(m) for m in s["free"]][:6]}
-        same = c.execute("SELECT appointment_date FROM Appointment WHERE patient_id=? AND doctor_id=? AND "
-                         "status='scheduled' AND substr(appointment_date, 1, 10)=?",
-                         (patient_id, doc["id"], day.isoformat())).fetchone()
+        same = c.execute(store.SQL["same_day"], (patient_id, doc["id"], day.isoformat())).fetchone()
         if same:
             return {"status": "already_booked",
                     "problem": f"already booked with {doc['name']} that day at {fmt_time(parse_time(same[0][11:16]))}"}
         h, m = divmod(minutes, 60)
-        appt = c.execute("INSERT INTO Appointment (patient_id, doctor_id, appointment_date, status, reason) "
-                         "VALUES (?, ?, ?, 'scheduled', ?)",
-                         (patient_id, doc["id"], f"{day} {h:02d}:{m:02d}:00", reason)).lastrowid
+        appt = c.execute(store.SQL["book"], (patient_id, doc["id"], f"{day} {h:02d}:{m:02d}:00", reason)).lastrowid
     return {"status": "booked", "appointment_id": appt, "doctor": doc["name"], "date": fmt_day(day),
             "time": fmt_time(minutes), "reason": reason}
 
 
-def upcoming(path, patient_id: int, now: datetime | None = None) -> list[dict]:
+def upcoming(store, patient_id: int, now: datetime | None = None) -> list[dict]:
     now = now or datetime.now()
-    with db(path) as c:
-        rows = c.execute("SELECT a.Appointment_ID, a.appointment_date, a.reason, d.First_Name, d.Last_Name, d.Specialty "
-                         "FROM Appointment a JOIN Doctor d ON d.Doctor_ID = a.doctor_id WHERE a.patient_id=? AND "
-                         "a.status='scheduled' AND a.appointment_date>=? ORDER BY a.appointment_date",
-                         (patient_id, f"{now:%Y-%m-%d %H:%M:00}")).fetchall()
+    with store.connect() as c:
+        rows = c.execute(store.SQL["upcoming"], (patient_id, f"{now:%Y-%m-%d %H:%M:00}")).fetchall()
     return [{"appointment_id": r[0], "doctor": f"Dr. {r[3].title()} {r[4].title()}", "specialty": r[5],
              "date": fmt_day(parse_day(r[1][:10])), "time": fmt_time(parse_time(r[1][11:16])), "reason": r[2]}
             for r in rows]
 
 
-def cancel(path, patient_id: int, appointment_id: int, now: datetime | None = None) -> dict:
+def cancel(store, patient_id: int, appointment_id: int, now: datetime | None = None) -> dict:
     now = now or datetime.now()
-    with db(path) as c:
-        r = c.execute("SELECT status, appointment_date FROM Appointment WHERE Appointment_ID=? AND patient_id=?",
-                      (appointment_id, patient_id)).fetchone()
+    with store.connect(write=True) as c:
+        r = c.execute(store.SQL["appointment"], (appointment_id, patient_id)).fetchone()
         if not r:  # someone else's appointment looks exactly like a missing one
             return {"status": "not_found", "problem": f"no appointment {appointment_id} for this patient"}
         if r[0] != "scheduled" or r[1] < f"{now:%Y-%m-%d %H:%M:00}":
             return {"status": "not_cancellable", "problem": f"appointment {appointment_id} is {r[0]} or already past"}
-        c.execute("UPDATE Appointment SET status='cancelled' WHERE Appointment_ID=?", (appointment_id,))
+        c.execute(store.SQL["cancel"], (appointment_id,))
     return {"status": "cancelled", "appointment_id": appointment_id}
 
 
 if __name__ == "__main__":  # self-check: python -m app.domain.appointments
     import tempfile
     from pathlib import Path
-    from app.store import init, next_weekday
+    from app.store import Sqlite, init, next_weekday
 
     assert [parse_time(s) for s in ("9:15 AM", "9 am", "09:15", "14:30", "2.30 pm", "12:00 PM", "12 am")] == \
         [555, 540, 555, 870, 870, 720, 0]
@@ -197,14 +187,14 @@ if __name__ == "__main__":  # self-check: python -m app.domain.appointments
     assert fmt_time(555) == "9:15 AM" and fmt_time(870) == "2:30 PM" and fmt_time(0) == "12:00 AM"
 
     with tempfile.TemporaryDirectory() as d:
-        db_ = init(Path(d) / "t.db", seed_demo=True)
+        db_ = Sqlite(init(Path(d) / "t.db", seed_demo=True))
         now = datetime.combine(date.today(), datetime.min.time()).replace(minute=1)  # the seed is relative to today
         tue, wed, thu = next_weekday("Tuesday"), next_weekday("Wednesday"), next_weekday("Thursday")
-        with db(db_) as c:
-            assert find_doctor(c, "Dr. Kapoor")[0]["name"] == "Dr. Anil Kapoor"
-            assert find_doctor(c, "the pediatrician")[0]["name"] == "Dr. Sunita Rao"
-            assert find_doctor(c, "cardiology")[0]["name"] == "Dr. Vikas Shah"
-            assert find_doctor(c, "Dr. Smith")[1]["status"] == "unknown_doctor"
+        with db_.connect() as c:
+            assert find_doctor(c, db_.SQL, "Dr. Kapoor")[0]["name"] == "Dr. Anil Kapoor"
+            assert find_doctor(c, db_.SQL, "the pediatrician")[0]["name"] == "Dr. Sunita Rao"
+            assert find_doctor(c, db_.SQL, "cardiology")[0]["name"] == "Dr. Vikas Shah"
+            assert find_doctor(c, db_.SQL, "Dr. Smith")[1]["status"] == "unknown_doctor"
         s = find_slots(db_, "Kapoor", f"{tue}", now)  # 09:00-13:00 in 15 min = 16 slots, Asha holds 10:00
         assert s["status"] == "ok" and s["free_count"] == 15 and "10:00 AM" not in s["free"] and s["free"][0] == "9:00 AM"
         assert find_slots(db_, "Kapoor", f"{wed}", now)["status"] == "closed"            # full-day leave

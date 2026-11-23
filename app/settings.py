@@ -88,8 +88,16 @@ class Clinic:
 
 @dataclass(frozen=True)
 class Store:
+    backend: str = "sqlite"         # sqlite: the demo clinic in `path` | docassist: DocAssist's MySQL ([docassist])
     path: str = "data/app.db"
     seed_demo: bool = True          # demo doctors/patients on an empty database (never in production)
+
+
+@dataclass(frozen=True)
+class DocAssist:
+    config_ini: str = ""            # dev: DocAssist's config.ini (sql_* keys); else DOCASSIST_SQL_* environment variables
+    section: str = "dev"            # which config.ini section
+    hospital_id: int = 999          # every doctor, patient and appointment is this hospital's
 
 
 @dataclass(frozen=True)
@@ -121,6 +129,7 @@ class Settings:
     resilience: Resilience
     clinic: Clinic
     store: Store
+    docassist: DocAssist
     otp: Otp
     skills: Skills
     agents: dict
@@ -132,7 +141,7 @@ class Settings:
 
 
 SECTIONS = {"server": Server, "openai": OpenAI, "engine": Engine, "resilience": Resilience, "clinic": Clinic, "store": Store,
-            "otp": Otp, "skills": Skills}
+            "docassist": DocAssist, "otp": Otp, "skills": Skills}
 
 
 def _value(v, kind, where):
@@ -196,6 +205,8 @@ def load(path: str | Path | None = None, env: Mapping[str, str] = os.environ) ->
             raise SettingsError(f"agents.{name}.prompt: no file {s.path(a.prompt)}")
         if not a.toolsets:
             raise SettingsError(f"agents.{name}.toolsets: empty")
+    if s.store.backend not in ("sqlite", "docassist"):
+        raise SettingsError("store.backend: sqlite or docassist")
     if s.engine.kind not in ("realtime", "webrtc", "cascade"):
         raise SettingsError("engine.kind: realtime, webrtc or cascade")
     if s.server.log_format not in ("text", "json"):

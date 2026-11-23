@@ -9,7 +9,7 @@ def list_doctors(ctx) -> dict:
 
     When: when asked which doctors there are.
     """
-    return {"doctors": rules.doctors(ctx.db)}
+    return {"doctors": rules.doctors(ctx.store)}
 
 
 @skill

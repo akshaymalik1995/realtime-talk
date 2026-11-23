@@ -2,8 +2,8 @@
 
 Production notes: WAL mode lets readers and one writer work at once; busy_timeout makes a second writer wait
 instead of failing. Writes that check-then-insert use BEGIN IMMEDIATE so two callers can't take one slot.
-Swapping in Postgres means re-implementing db() and the SQL dialect bits; the rules never open connections
-themselves. Table shapes follow DocAssist (pyDocAssist table/Patient.py, appointment_api.py).
+Another database is another store: connect() plus the same named SQL statements (app/docassist.py: DocAssist's
+MySQL). The rules never open connections themselves. Table shapes follow DocAssist (pyDocAssist table/Patient.py, appointment_api.py).
 """
 import contextlib
 import sqlite3
@@ -60,6 +60,58 @@ def db(path):
             yield c
     finally:
         c.close()
+
+
+class Sqlite:
+    """The demo store: a SQLite file. The rules (app/domain) open connections with connect() and run these named
+    statements; another store (app/docassist.py) supplies the same names for its own database."""
+    SQL = {
+        "doctors": "SELECT d.Doctor_ID, d.First_Name, d.Last_Name, d.Specialty, GROUP_CONCAT(DISTINCT a.day) "
+                   "FROM Doctor d LEFT JOIN Availability a ON a.doctor_id = d.Doctor_ID "
+                   "GROUP BY d.Doctor_ID ORDER BY d.Doctor_ID",
+        "hours": "SELECT start_time, end_time, duration_minutes FROM Availability WHERE doctor_id=? AND day=? "
+                 "ORDER BY start_time",
+        "day_appointments": "SELECT appointment_date, status, notes FROM Appointment WHERE doctor_id=? "
+                            "AND status!='cancelled' AND substr(appointment_date, 1, 10)=?",
+        "same_day": "SELECT appointment_date FROM Appointment WHERE patient_id=? AND doctor_id=? AND status='scheduled' "
+                    "AND substr(appointment_date, 1, 10)=?",
+        "book": "INSERT INTO Appointment (patient_id, doctor_id, appointment_date, status, reason) "
+                "VALUES (?, ?, ?, 'scheduled', ?)",
+        "upcoming": "SELECT a.Appointment_ID, a.appointment_date, a.reason, d.First_Name, d.Last_Name, d.Specialty "
+                    "FROM Appointment a JOIN Doctor d ON d.Doctor_ID = a.doctor_id WHERE a.patient_id=? "
+                    "AND a.status='scheduled' AND a.appointment_date>=? ORDER BY a.appointment_date",
+        "appointment": "SELECT status, appointment_date FROM Appointment WHERE Appointment_ID=? AND patient_id=?",
+        "cancel": "UPDATE Appointment SET status='cancelled' WHERE Appointment_ID=?",
+        "adult_on_phone": "SELECT First_Name, Last_Name FROM Patient WHERE Phone_Number=? AND is_active=1 AND age>=18",
+        "email_taken": "SELECT 1 FROM Patient WHERE Email=? AND is_active=1",
+        "register": "INSERT INTO Patient (First_Name, Last_Name, DOB, age, sex, Phone_Number, Email) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "on_phone": "SELECT Patient_ID, First_Name, Last_Name FROM Patient WHERE Phone_Number=? AND is_active=1 "
+                    "ORDER BY Patient_ID",
+    }
+
+    def __init__(self, path):
+        self.path = path
+
+    @contextlib.contextmanager
+    def connect(self, write: bool = False):
+        """write: one IMMEDIATE transaction, so a check-then-insert can't race another caller."""
+        with db(self.path) as c:
+            if write:
+                c.execute("BEGIN IMMEDIATE")
+            yield c
+
+    def check(self) -> list:
+        with self.connect() as c:
+            return c.execute(self.SQL["doctors"]).fetchall()
+
+
+def open_store(settings):
+    """The store named by [store] backend."""
+    if settings.store.backend == "docassist":
+        from app.docassist import DocAssistStore  # needs mysql-connector-python; only loaded when used
+        return DocAssistStore(settings.docassist)
+    return Sqlite(settings.path(settings.store.path))
 
 
 def next_weekday(name: str, after: date | None = None) -> date:

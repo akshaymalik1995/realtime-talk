@@ -19,7 +19,7 @@ def start_registration(ctx, first_name: str, last_name: str, phone: str, sex: Li
     """
     rec, errs = patients.validate(first_name, last_name, phone, sex, dob, age, email)
     if not errs:
-        errs = patients.check_new(ctx.db, rec)
+        errs = patients.check_new(ctx.store, rec)
     if errs:
         ctx.otp.pending = None  # a failed attempt also cancels an older pending code
         return {"status": "invalid", "problems": errs}

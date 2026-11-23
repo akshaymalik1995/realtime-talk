@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Callable
 
-from app import registry
+from app import registry, store
 from app.domain import numbers
 from app.metrics import METRICS
 from app.settings import Settings, SettingsError
@@ -42,7 +42,7 @@ class Session:
         if self.agent not in self.settings.agents:
             raise SettingsError(f"unknown agent '{self.agent}'")
         self.config = self.settings.agents[self.agent]
-        self.db = self.settings.path(self.settings.store.path)
+        self.store = store.open_store(self.settings)  # where patients and appointments live ([store] backend)
         self.sms = self.sms or SimulatedSms(on_send=lambda m: self.emit({"type": "sms", **m}))
         o = self.settings.otp
         self.otp = self.otp or Otp(self.sms, self.settings.clinic.name, o.ttl_s, o.max_tries, o.max_sends)

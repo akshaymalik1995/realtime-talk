@@ -24,7 +24,7 @@ def verify_patient(ctx, phone: str) -> dict:
     number = patients.normalize_phone(phone)
     if not number:
         return {"status": "bad_phone", "problem": "need a 10-digit mobile number"}
-    found = patients.by_phone(ctx.db, number)
+    found = patients.by_phone(ctx.store, number)
     if not found:
         ctx.otp.pending = None
         return {"status": "not_found", "problem": "no patient has this number",
@@ -55,7 +55,7 @@ def confirm_code(ctx, code: str) -> dict:
     if problem:
         return problem
     if purpose == "registration":
-        out = patients.insert(ctx.db, payload)
+        out = patients.insert(ctx.store, payload)
         if out["status"] == "registered":
             verified(ctx, {"id": out["patient_id"], "name": out["name"]})
             out["next"] = "Give them their patient ID, then ask if they would like to book an appointment."

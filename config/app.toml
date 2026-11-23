@@ -37,6 +37,12 @@ name = "City Care Clinic"
 path = "data/app.db"
 seed_demo = true
 
+# [store] backend = "docassist" uses DocAssist's MySQL instead of the demo clinic (README "DocAssist").
+[docassist]
+config_ini = 'D:\abhinay\DocAssist\pyDocAssist\config.ini'   # dev only; production: DOCASSIST_SQL_* env vars
+section = "dev"
+hospital_id = 999
+
 [otp]
 ttl_s = 300
 max_tries = 3

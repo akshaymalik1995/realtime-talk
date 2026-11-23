@@ -35,7 +35,8 @@ def _sync(coro):
 
 def test_settings(env=None) -> settings.Settings:
     """Settings for tests: a fresh temp database, plus any overrides."""
-    base = {"APP__STORE__PATH": str(TMP / f"t{time.monotonic_ns()}.db"), "APP__OPENAI__DEV_KEY_INI": '""'}
+    base = {"APP__STORE__PATH": str(TMP / f"t{time.monotonic_ns()}.db"), "APP__OPENAI__DEV_KEY_INI": '""',
+            "APP__STORE__BACKEND": '"sqlite"'}
     return settings.load(env={**base, **(env or {})})
 
 
@@ -43,6 +44,8 @@ def check_settings():
     s = test_settings({"APP__SERVER__PORT": "9001", "APP__OPENAI__MODEL": "gpt-x"})
     assert s.server.port == 9001 and s.openai.model == "gpt-x" and s.resilience.stall_s == 2.0
     assert s.agents["front_desk"].vad["silence_duration_ms"] == 900
+    from app import docassist  # every store answers every statement the rules use
+    assert set(store.Sqlite.SQL) <= set(docassist.statements(1)), set(store.Sqlite.SQL) - set(docassist.statements(1))
     t = test_settings({"APP__OPENAI__TRANSCRIBE_LANGUAGE": '"ta"', "APP__OPENAI__TRANSCRIBE_PROMPT": '""'}).openai
     assert t.transcription() == {"model": t.transcribe_model, "language": "ta"}, t.transcription()
     for env, msg in [({"APP__SERVER__PROT": "1"}, "unknown key"), ({"APP__SERVER__PORT": '"80"'}, "expected int"),

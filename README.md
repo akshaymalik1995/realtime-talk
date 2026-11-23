@@ -45,6 +45,21 @@ name added to an agent's `toolsets` in config.
 
 Phone on the same Wi-Fi: `python lan.py` (HTTPS with a self-signed certificate; the page prints the URL).
 
+## DocAssist
+
+`[store] backend = "docassist"` runs the same skills on DocAssist's MySQL (`app/docassist.py`): its Patient,
+Patient_Hospital, Doctor, Doctor_Hospital, doctor_availability and Appointments tables, scoped to
+`[docassist] hospital_id`. Credentials: `DOCASSIST_SQL_HOST/_USER/_PASSWORD/_DATABASE`, or in development the
+`sql_*` keys of `[docassist] config_ini`'s section. Calls then register and book for real in that database.
+
+```
+python -m app.docassist                                   # register, book, cancel on it: one transaction, rolled back
+APP__STORE__BACKEND='"docassist"' python lan.py           # the phone desk on DocAssist
+```
+
+A store is `connect()` plus named SQL statements (`app/store.py` `Sqlite.SQL`); the rules in `app/domain` only run
+statements by name, so another database is one more store.
+
 ## Tune without code
 
 `config/*.toml`: model, voice, turn detection per agent, token cap, limits, OTP rules, stall recovery.

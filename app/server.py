@@ -266,7 +266,10 @@ async def run(settings: Settings, ready: asyncio.Event | None = None, stop: asyn
     for name in settings.agents:  # fail at startup, not in the first call: toolsets + prompt placeholders
         Session(settings, name).instructions()
     app = app or App(settings, api_key(settings))
-    store.init(settings.path(settings.store.path), seed_demo=settings.store.seed_demo)
+    if settings.store.backend == "sqlite":
+        store.init(settings.path(settings.store.path), seed_demo=settings.store.seed_demo)
+    else:  # an external database: prove it answers now, not in the first call
+        log.info("store %s: %d doctors", settings.store.backend, len(store.open_store(settings).check()))
     stop = stop or asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):

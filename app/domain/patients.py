@@ -94,22 +94,21 @@ def validate(first_name, last_name, phone, sex, dob="", age="", email="") -> tup
     return (None, errs) if errs else (rec, [])
 
 
-def duplicates(c, rec) -> list[str]:
+def duplicates(c, sql, rec) -> list[str]:
     """DocAssist: an adult's phone must be unique; an email must be unique."""
     errs = []
     if rec["age"] >= 18:
-        row = c.execute("SELECT First_Name, Last_Name FROM Patient WHERE Phone_Number=? AND is_active=1 AND age>=18",
-                        (rec["phone"],)).fetchone()
+        row = c.execute(sql["adult_on_phone"], (rec["phone"],)).fetchone()
         if row:
-            errs.append(f"this phone is already registered to an adult patient ({row[0].title()} {row[1][0].upper()}.)")
-    if rec["email"] and c.execute("SELECT 1 FROM Patient WHERE Email=? AND is_active=1", (rec["email"],)).fetchone():
+            errs.append(f"this phone is already registered to an adult patient ({row[0].title()} {(row[1] or '?')[0].upper()}.)")
+    if rec["email"] and c.execute(sql["email_taken"], (rec["email"],)).fetchone():
         errs.append("this email is already registered to another patient")
     return errs
 
 
-def check_new(path, rec) -> list[str]:
-    with db(path) as c:
-        return duplicates(c, rec)
+def check_new(store, rec) -> list[str]:
+    with store.connect() as c:
+        return duplicates(c, store.SQL, rec)
 
 
 def spell(word: str) -> str:
@@ -126,22 +125,21 @@ def read_back(rec) -> dict:
             **({"email": rec["email"]} if rec["email"] else {})}
 
 
-def insert(path, rec) -> dict:
+def insert(store, rec) -> dict:
     """Write a validated registration, re-checking duplicates inside the write transaction."""
-    with db(path) as c:
-        c.execute("BEGIN IMMEDIATE")
-        if errs := duplicates(c, rec):
+    with store.connect(write=True) as c:
+        if errs := duplicates(c, store.SQL, rec):
             return {"status": "invalid", "problems": errs}
-        cur = c.execute("INSERT INTO Patient (First_Name, Last_Name, DOB, age, sex, Phone_Number, Email) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (rec["first_name"], rec["last_name"], rec["dob"].isoformat(), rec["age"], rec["sex"],
-                         rec["phone"], rec["email"]))
-    return {"status": "registered", "patient_id": cur.lastrowid, "name": read_back(rec)["name"]}
+        new_id = c.execute(store.SQL["register"],
+                           (rec["first_name"], rec["last_name"], rec["dob"].isoformat(), rec["age"], rec["sex"],
+                            rec["phone"], rec["email"])).lastrowid
+        if store.SQL.get("link_patient"):  # stores where a patient belongs to a hospital (DocAssist)
+            c.execute(store.SQL["link_patient"], (new_id,))
+    return {"status": "registered", "patient_id": new_id, "name": read_back(rec)["name"]}
 
 
-def by_phone(path, phone: str) -> list[dict]:
+def by_phone(store, phone: str) -> list[dict]:
     """Active patients on a phone (a parent and children may share one)."""
-    with db(path) as c:
-        rows = c.execute("SELECT Patient_ID, First_Name, Last_Name FROM Patient WHERE Phone_Number=? AND is_active=1 "
-                         "ORDER BY Patient_ID", (phone,)).fetchall()
+    with store.connect() as c:
+        rows = c.execute(store.SQL["on_phone"], (phone,)).fetchall()
     return [{"id": r[0], "name": f"{r[1].title()} {r[2].title()}"} for r in rows]
