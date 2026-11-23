@@ -139,6 +139,7 @@ async def converse(ws, chunks, speaker, seconds: float, run_tool=None, filler_pc
     last_event = t0
     item_id, item_start, item_len = None, 0, 0  # model message now playing: stream start position + bytes
     filled = set()
+    said_so_far = []  # the reply being generated, as text: if the link dies mid-reply, the next one finishes it
 
     def note(event, detail=""):
         log_.append((round(time.perf_counter() - t0, 2), event, detail))
@@ -160,6 +161,7 @@ async def converse(ws, chunks, speaker, seconds: float, run_tool=None, filler_pc
                 raise RuntimeError(e["error"])
             if kind == "response.created":
                 in_response = True
+                said_so_far.clear()
                 note(kind, e.get("response", {}).get("status", ""))
             elif kind == "response.output_audio.delta":
                 if not responding:
@@ -192,7 +194,10 @@ async def converse(ws, chunks, speaker, seconds: float, run_tool=None, filler_pc
                 note("user_said", e["transcript"].strip())
             elif kind == "conversation.item.input_audio_transcription.failed":  # the caller's words were not caught
                 note("user_unheard", e.get("error", {}).get("message", ""))
+            elif kind == "response.output_audio_transcript.delta":
+                said_so_far.append(e.get("delta", ""))
             elif kind == "response.output_audio_transcript.done":
+                said_so_far.clear()
                 note("model_said", e["transcript"])
             elif kind == "response.done":
                 responding = in_response = False
@@ -221,6 +226,8 @@ async def converse(ws, chunks, speaker, seconds: float, run_tool=None, filler_pc
                 lag = f"our loop max lag {max(lags):.2f}s over the last {len(lags)}s"
                 note("STALL", f"no server event for {quiet:.1f}s mid-response; {alive or dead}; {lag}")
                 if not alive:
+                    if said_so_far:
+                        note("model_cut", "".join(said_so_far))
                     raise Stalled(f"{dead} after {quiet:.0f}s without events; {lag}")
                 while in_response and time.perf_counter() - last_event > stall_s:
                     await asyncio.sleep(1)  # report each slow stretch once
@@ -266,10 +273,13 @@ async def converse_resilient(start, chunks, speaker, seconds: float, max_resumes
                 raise c
             yield c
 
+    cut = []  # a reply the dead link cut off mid-way
+
     def note(t, event, detail):
         log_.append((t, event, detail))
-        if event in ("user_said", "model_said"):
+        if event in ("user_said", "model_said", "model_cut"):
             history.append(("user" if event == "user_said" else "assistant", detail))
+            cut[:] = [detail] if event == "model_cut" else []
         elif event == "tool_call":  # replay what already happened, or the model redoes it (e.g. a spent code)
             history.append(("system", f"Already done: {detail}"))
         if on_note:
@@ -294,7 +304,9 @@ async def converse_resilient(start, chunks, speaker, seconds: float, max_resumes
                 with contextlib.suppress(Exception):
                     ws.transport.abort()  # a dead link never answers a polite close: don't wait 10 s for it
                 ws = await start()
-                await replay(ws, history, context() if context else "")
+                finish = ("Your last reply was cut off by a network drop after the words above. Finish it from "
+                          "exactly where it stopped, without repeating any of it. " if cut else "")
+                await replay(ws, history, finish + (context() if context else ""))
                 await send(ws, {"type": "response.create"})
         return log_
     finally:

@@ -40,7 +40,7 @@ def test_settings(env=None) -> settings.Settings:
 
 def check_settings():
     s = test_settings({"APP__SERVER__PORT": "9001", "APP__OPENAI__MODEL": "gpt-x"})
-    assert s.server.port == 9001 and s.openai.model == "gpt-x" and s.resilience.stall_s == 5.0
+    assert s.server.port == 9001 and s.openai.model == "gpt-x" and s.resilience.stall_s == 2.0
     assert s.agents["front_desk"].vad["silence_duration_ms"] == 900
     for env, msg in [({"APP__SERVER__PROT": "1"}, "unknown key"), ({"APP__SERVER__PORT": '"80"'}, "expected int"),
                      ({"APP__STORE__SEED_DEMO": "1"}, "expected bool"), ({"APP__NOPE__X": "1"}, "unknown section"),
@@ -185,6 +185,7 @@ async def check_resume():
                     await ws.recv()
                 for e in ({"type": "conversation.item.input_audio_transcription.completed", "transcript": "hello"},
                           {"type": "response.created", "response": {"status": "in_progress"}},
+                          {"type": "response.output_audio_transcript.delta", "delta": "We open at"},
                           {"type": "response.output_audio.delta", "item_id": "i1", "delta": delta}):
                     await ws.send(json.dumps(e))
                 ws.transport.pause_reading()  # stop reading: pings go unanswered, like the real dead link
@@ -222,8 +223,9 @@ async def check_resume():
     events = [e for _, e, _ in log]
     assert events.index("STALL") < events.index("RESUME") and len(conns) == 2, events
     assert replayed[0] == ("user", "hello") and replayed[-1][1].endswith("STATE"), replayed
+    assert replayed[1] == ("assistant", "We open at") and "Finish it" in replayed[-1][1], replayed  # cut reply finished
     assert answered and answered[0] < 8, answered
-    print(f"resume ok: stall detected, reconnected, reply {answered[0]:.1f}s after the start")
+    print(f"resume ok: stall detected, reconnected, cut reply finished, reply {answered[0]:.1f}s after the start")
 
 
 class FakeOpenAI:
@@ -277,7 +279,7 @@ async def check_server():
     """The real server, end to end, against the fake OpenAI: page, health, metrics, agent allowlist,
     a conversation with a tool call + SMS, and the concurrency limit."""
     port, up = 8781, 8782
-    s = test_settings({"APP__SERVER__PORT": str(port), "APP__SERVER__MAX_SESSIONS": "1",
+    s = test_settings({"APP__SERVER__PORT": str(port), "APP__SERVER__MAX_SESSIONS": "1", "APP__ENGINE__KIND": '"realtime"',
                        "APP__OPENAI__URL": f'"ws://127.0.0.1:{up}"'})
     fake = FakeOpenAI()
     app = server.App(s, key="test-key-not-real")
@@ -481,6 +483,78 @@ async def check_cascade():
           "superseded reply, server end to end")
 
 
+async def check_webrtc():
+    """The WebRTC engine through the real server, with OpenAI faked: the page's offer goes to call creation with
+    our prompt and tools (never the key), the answer comes back, the side connection runs the tool call, the page
+    gets its events and the SMS, and the call is hung up when the page leaves."""
+    port, up = 8785, 8786
+    s = test_settings({"APP__ENGINE__KIND": '"webrtc"', "APP__SERVER__PORT": str(port)})
+    calls, hung, outputs = [], [], []
+    call = {"type": "function_call", "name": "verify_patient", "call_id": "c1",
+            "arguments": json.dumps({"phone": "9845012367"})}
+
+    async def side(ws):  # the fake side connection: hears a number, proposes verify_patient, then speaks
+        try:
+            for e in ({"type": "input_audio_buffer.speech_started"}, {"type": "input_audio_buffer.speech_stopped"},
+                      {"type": "conversation.item.input_audio_transcription.completed", "transcript": "My number is 9845012367."},
+                      {"type": "response.done", "response": {"status": "completed", "output": [call]}}):
+                await ws.send(json.dumps(e))
+            async for raw in ws:
+                m = json.loads(raw)
+                if m["type"] == "conversation.item.create":
+                    outputs.append(m["item"]["output"])
+                elif m["type"] == "response.create":
+                    for e in ({"type": "output_audio_buffer.started"},
+                              {"type": "response.output_audio_transcript.done", "transcript": "Please read me the code."},
+                              {"type": "response.done", "response": {"status": "completed", "output": []}},
+                              {"type": "output_audio_buffer.stopped"}):
+                        await ws.send(json.dumps(e))
+        except ConnectionClosed:
+            pass
+
+    async def create(_s, key, offer, session):
+        calls.append((key, offer, session))
+        return "v=0 answer", "rtc_test"
+
+    async def hangup(call_id):
+        hung.append(call_id)
+
+    hooks = {"create": create, "connect": lambda _s, _k, _c: connect(f"ws://127.0.0.1:{up}"), "hangup": hangup}
+    app = server.App(s, key="test-key-not-real", rtc=hooks)
+    ready, stop = asyncio.Event(), asyncio.Event()
+    async with serve(side, "127.0.0.1", up):
+        srv = asyncio.create_task(server.run(s, ready=ready, stop=stop, app=app))
+        await asyncio.wait_for(ready.wait(), 10)
+        msgs = []
+        async with connect(f"ws://127.0.0.1:{port}/ws?agent=front_desk") as ws:
+            first = json.loads(await ws.recv())
+            assert first == {"type": "status", "state": "connecting", "engine": "webrtc"}, first
+            await ws.send(json.dumps({"sdp": "v=0 offer"}))
+            while True:
+                m = json.loads(await asyncio.wait_for(ws.recv(), 10))
+                msgs.append(m)
+                if any(x.get("event") == "speaking_done" for x in msgs) and any(x["type"] == "desk" for x in msgs):
+                    break
+        for _ in range(50):
+            if hung:
+                break
+            await asyncio.sleep(0.1)
+        stop.set()
+        await asyncio.wait_for(srv, 15)
+    kinds = [m["type"] for m in msgs]
+    key, offer, session = calls[0]
+    assert offer == "v=0 offer" and session["tools"] and "front desk" in session["instructions"], session
+    assert {"type": "rtc_answer", "sdp": "v=0 answer"} in msgs and "sms" in kinds, kinds
+    code = re.sub(r"\D", "", next(m for m in msgs if m["type"] == "sms")["text"])
+    assert outputs and "code_sent" in outputs[0] and code not in outputs[0], outputs  # the model never saw it
+    events = [m.get("event") for m in msgs if m["type"] == "log"]
+    assert events.index("user_said") < events.index("tool_call") < events.index("first_audio_delta") \
+        < events.index("model_said"), events
+    assert hung == ["rtc_test"], hung
+    print("webrtc ok: offer -> call with prompt + tools, answer back, tool call on the side connection, "
+          "page events + SMS, hung up on leave")
+
+
 async def check_all():
     check_settings()
     await check_registry()
@@ -488,6 +562,7 @@ async def check_all():
     await check_resume()
     await check_server()
     await check_cascade()
+    await check_webrtc()
     print("ALL OK")
 
 

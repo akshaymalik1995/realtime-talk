@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlsplit
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed
 
-from app import cascade, providers, realtime, registry, store
+from app import cascade, providers, realtime, registry, store, webrtc
 from app.logs import session_id
 from app.metrics import METRICS
 from app.session import Session
@@ -86,7 +86,7 @@ def _count(v) -> bool:
 class App:
     """Process-wide state: settings, the key, the filler clip, and how many conversations are running."""
 
-    def __init__(self, settings: Settings, key: str | None = None, start_session=None, parts=None):
+    def __init__(self, settings: Settings, key: str | None = None, start_session=None, parts=None, rtc=None):
         self.settings, self.key = settings, key
         self.active = 0
         self.draining = False
@@ -100,6 +100,7 @@ class App:
             self.settings, self.key, instr, tools, vad))
         # the cascade engine's providers (app/providers/), checked at startup; injectable for tests
         self.parts = parts or (providers.load(settings) if settings.engine.kind == "cascade" else None)
+        self.rtc = rtc or {}  # webrtc engine test hooks: create / connect / hangup
 
     async def handler(self, browser):
         session_id.set(f"{id(browser) & 0xffffff:06x}")
@@ -122,6 +123,7 @@ class App:
         session = Session(s, agent, emit=lambda m: loop.call_soon_threadsafe(out.put_nowait, m))
         spk = BrowserSpeaker(out)
         started, opened = time.monotonic(), []
+        offers: asyncio.Queue = asyncio.Queue(maxsize=1)  # webrtc engine: the page's SDP offer
 
         async def to_browser():
             while (m := await out.get()) is not None:
@@ -142,6 +144,9 @@ class App:
                 elif isinstance(c, dict) and set(c) == {"cleared", "estimate"} and _count(c["cleared"]) \
                         and _count(c["estimate"]):
                     spk.correct(c["estimate"], c["cleared"])
+                elif isinstance(c, dict) and set(c) == {"sdp"} and isinstance(c["sdp"], str) \
+                        and 0 < len(c["sdp"]) <= webrtc.MAX_SDP and offers.empty():
+                    offers.put_nowait(c["sdp"])
                 else:
                     log.warning("ignored browser message %.80r", m)
 
@@ -169,9 +174,15 @@ class App:
 
         sender = asyncio.create_task(to_browser())
         try:
-            out.put_nowait({"type": "status", "state": "connecting"})
+            out.put_nowait({"type": "status", "state": "connecting", "engine": s.engine.kind})
             filler = self.filler if session.config.filler else None
-            if s.engine.kind == "cascade":
+            if s.engine.kind == "webrtc":
+                await webrtc.converse(
+                    s, self.key, offers, lambda sdp: out.put(({"type": "rtc_answer", "sdp": sdp})), mic(),
+                    seconds=s.server.session_limit_s, instructions=session.instructions(), tools=session.specs(),
+                    run_tool=session.run_tool, vad=session.config.vad, on_note=on_note, on_ready=ready,
+                    max_resumes=s.resilience.max_resumes, **self.rtc)
+            elif s.engine.kind == "cascade":
                 await cascade.converse(
                     self.parts, s, self.key, mic(), spk, seconds=s.server.session_limit_s,
                     instructions=session.instructions(), tools=session.specs(), run_tool=session.run_tool,

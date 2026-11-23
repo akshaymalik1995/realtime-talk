@@ -49,7 +49,8 @@ class OpenAI:
 
 @dataclass(frozen=True)
 class Engine:
-    kind: str = "realtime"          # realtime: one speech-to-speech model | cascade: stt -> llm -> tts (app/cascade.py)
+    kind: str = "realtime"          # realtime: speech-to-speech over our websocket | webrtc: the same model, audio
+                                    # straight from the browser (app/webrtc.py) | cascade: stt -> llm -> tts
     stt: str = "openai"             # cascade parts: provider modules in app/providers/
     llm: str = "openai"
     tts: str = "openai"
@@ -59,8 +60,8 @@ class Engine:
 
 @dataclass(frozen=True)
 class Resilience:
-    stall_s: float = 5.0            # quiet this long mid-response -> ping
-    ping_timeout_s: float = 5.0     # no pong in this long -> the connection is dead: reconnect
+    stall_s: float = 2.0            # quiet this long mid-response -> ping (replies stream ~8x faster than they play)
+    ping_timeout_s: float = 2.0     # no pong in this long -> the connection is dead: reconnect
     max_resumes: int = 2            # reconnects per conversation
 
 
@@ -179,8 +180,8 @@ def load(path: str | Path | None = None, env: Mapping[str, str] = os.environ) ->
             raise SettingsError(f"agents.{name}.prompt: no file {s.path(a.prompt)}")
         if not a.toolsets:
             raise SettingsError(f"agents.{name}.toolsets: empty")
-    if s.engine.kind not in ("realtime", "cascade"):
-        raise SettingsError("engine.kind: realtime or cascade")
+    if s.engine.kind not in ("realtime", "webrtc", "cascade"):
+        raise SettingsError("engine.kind: realtime, webrtc or cascade")
     if s.server.log_format not in ("text", "json"):
         raise SettingsError("server.log_format: text or json")
     return s

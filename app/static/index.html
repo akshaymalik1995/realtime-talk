@@ -217,6 +217,22 @@ registerProcessor('mic', Mic);
 registerProcessor('player', Player);`;
 
 let ctx, ws, stream, player, clearEstimate = 0, ready = false, t0 = 0, timerId;
+let engine = 'realtime', pc = null, rtcAudio = null;  // webrtc engine: audio goes straight to OpenAI
+
+// WebRTC engine: send our offer through the server (it holds the key), play OpenAI's audio directly
+async function startRtc() {
+  pc = new RTCPeerConnection();
+  rtcAudio = new Audio();
+  rtcAudio.autoplay = true;
+  pc.ontrack = e => { rtcAudio.srcObject = e.streams[0]; };
+  stream.getAudioTracks().forEach(t => pc.addTrack(t, stream));
+  pc.createDataChannel('oai-events');
+  pc.onconnectionstatechange = () => {
+    if (pc && pc.connectionState === 'failed') { showError('The audio connection failed.', true); stop('error'); }
+  };
+  await pc.setLocalDescription(await pc.createOffer());
+  ws.send(JSON.stringify({ sdp: pc.localDescription.sdp }));
+}
 
 // ---- UI helpers (model/user text always via textContent, never innerHTML) ----
 const el = (tag, cls, ...kids) => { const e = document.createElement(tag); if (cls) e.className = cls; e.append(...kids); return e; };
@@ -421,6 +437,8 @@ function onLog({ event, detail }) {
     case 'user_said': fill('user', detail); break;
     case 'user_unheard': fill('user', '', 'Not caught. Please repeat.'); activity('warn', 'Not caught', detail); break;
     case 'model_said': fill('ai', detail); break;
+    case 'model_cut': fill('ai', detail + '…'); break;  // the link dropped mid-reply; the next reply finishes it
+    case 'speaking_done': if (state === 'speaking') setStatus('listening'); break;
     case 'response.done': while (pending.ai.length) fill('ai', ''); break;  // a reply cut before any text
     case 'tool_call': activity('tool', 'Action', detail); break;
     case 'filler': activity('info', 'Filler', detail); break;
@@ -437,6 +455,11 @@ function onMessage(e) {
   else if (m.type === 'desk') onDesk(m);
   else if (m.type === 'sms') onSms(m);
   else if (m.type === 'clear') { clearEstimate = m.estimate; player.port.postMessage('clear'); }
+  else if (m.type === 'status' && m.state === 'connecting') {
+    engine = m.engine || 'realtime';
+    if (engine === 'webrtc') startRtc().catch(err => { showError('Audio connection failed: ' + err.message); stop('error'); });
+  }
+  else if (m.type === 'rtc_answer') pc?.setRemoteDescription({ type: 'answer', sdp: m.sdp });
   else if (m.type === 'status' && m.state === 'ready') {
     ready = true; setStatus('listening');
     activity('info', 'Connected', `limit ${m.limit_s / 60} min`);
@@ -490,7 +513,7 @@ async function start() {
   ctx.createMediaStreamSource(stream).connect(mic);
   mic.port.onmessage = ({ data }) => {
     $('level').style.width = Math.min(100, data.level * 400) + '%';
-    if (ready && ws.readyState === WebSocket.OPEN) ws.send(data.pcm);
+    if (ready && engine !== 'webrtc' && ws.readyState === WebSocket.OPEN) ws.send(data.pcm);
   };
 
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?agent=${AGENT}`);
@@ -513,7 +536,10 @@ function stop(next = 'ended') {
   w?.close();
   stream?.getTracks().forEach(t => t.stop());
   ctx?.close();
-  ctx = stream = player = null;
+  pc?.close();
+  if (rtcAudio) rtcAudio.srcObject = null;
+  ctx = stream = player = pc = rtcAudio = null;
+  engine = 'realtime';
   clearInterval(timerId);
   $('level').style.width = '0%';
   $('talk-sub').textContent = 'Headphones recommended';
