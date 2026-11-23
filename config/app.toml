@@ -1,0 +1,51 @@
+# Development settings. Production: config/production.toml (APP_CONFIG=config/production.toml).
+# Any value can be overridden by an environment variable APP__<SECTION>__<KEY>, e.g. APP__SERVER__PORT=9000.
+
+[server]
+host = "127.0.0.1"
+port = 8000
+origins = ["http://127.0.0.1:8000", "http://localhost:8000"]
+max_sessions = 20
+session_limit_s = 300
+log_format = "text"
+log_level = "INFO"
+
+[openai]
+model = "gpt-realtime-mini"
+voice = "marin"
+transcribe_model = "gpt-4o-mini-transcribe"
+max_output_tokens = 1000
+dev_key_ini = 'D:\abhinay\DocAssist\pyDocAssist\config.ini'   # dev only; production uses OPENAI_API_KEY
+
+[resilience]
+stall_s = 5
+ping_timeout_s = 5
+max_resumes = 2
+
+[clinic]
+name = "City Care Clinic"
+
+[store]
+path = "data/app.db"
+seed_demo = true
+
+[otp]
+ttl_s = 300
+max_tries = 3
+max_sends = 3
+
+[skills]
+timeout_s = 10
+filler_audio = "assets/filler_marin.pcm"
+
+# An agent = a prompt template + the skill modules (toolsets) it may use + its turn detection.
+# A new skill in an existing toolset is picked up automatically; a new toolset is one name added here.
+[agents.front_desk]
+prompt = "prompts/front_desk.md"
+toolsets = ["identity", "registration", "appointments", "clinic_info"]
+vad = { type = "server_vad", silence_duration_ms = 900 }   # dictation has pauses: don't cut callers off
+
+[agents.support]
+prompt = "prompts/support.md"
+toolsets = ["orders"]
+vad = { type = "server_vad", silence_duration_ms = 500 }

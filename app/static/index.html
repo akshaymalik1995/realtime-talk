@@ -1,0 +1,534 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Front Desk</title>
+<link rel="icon" href="data:,">
+<script>
+  // Preline theme switch (preline.co/docs/dark-mode.html): apply the saved theme before first paint. Default: follow the OS.
+  if (!localStorage.getItem('hs_theme')) localStorage.setItem('hs_theme', 'auto');
+  (function () {
+    const html = document.querySelector('html');
+    const isLightOrAuto = localStorage.getItem('hs_theme') === 'light' || (localStorage.getItem('hs_theme') === 'auto' && !window.matchMedia('(prefers-color-scheme: dark)').matches);
+    const isDarkOrAuto = localStorage.getItem('hs_theme') === 'dark' || (localStorage.getItem('hs_theme') === 'auto' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    if (isLightOrAuto && html.classList.contains('dark')) html.classList.remove('dark');
+    else if (isDarkOrAuto && html.classList.contains('light')) html.classList.remove('light');
+    else if (isDarkOrAuto && !html.classList.contains('dark')) html.classList.add('dark');
+    else if (isLightOrAuto && !html.classList.contains('light')) html.classList.add('light');
+  })();
+
+  // Preline UI 5 for Tailwind v4, from the CDN: its variants (hs-collapse-open:, hs-dark-mode-active:, ...) and theme
+  // tokens (bg-layer, text-foreground, bg-primary, ...). The Tailwind browser build can't @import URLs, so fetch
+  // the files, inline variants.css's own @imports, and hand everything over as a text/tailwindcss style.
+  const PRELINE = 'https://cdn.jsdelivr.net/npm/preline@5.1.0/';
+  (async () => {
+    const get = async p => { const r = await fetch(PRELINE + p); if (!r.ok) throw new Error(`${p}: HTTP ${r.status}`); return r.text(); };
+    let variants = await get('variants.css');
+    const imports = [...variants.matchAll(/@import '\.\/(.+?)';/g)];
+    const parts = await Promise.all(imports.map(m => get(m[1])));
+    imports.forEach((m, i) => { variants = variants.replace(m[0], parts[i]); });
+    const s = document.createElement('style');
+    s.type = 'text/tailwindcss';
+    s.textContent = `${variants}\n${await get('theme.css')}\n@custom-variant dark (&:where(.dark, .dark *));`;
+    document.head.append(s);
+  })().catch(e => console.error('Preline CSS failed to load', e));
+</script>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+</head>
+<body class="bg-background min-h-screen">
+
+<!-- Navbar -->
+<header class="sticky top-0 z-40 bg-layer/90 backdrop-blur border-b border-layer-line">
+  <nav class="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-x-3">
+    <div class="flex items-center gap-x-2.5">
+      <span class="inline-flex justify-center items-center size-8 rounded-lg bg-primary text-primary-foreground">
+        <svg class="size-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+      </span>
+      <span class="font-semibold text-foreground">Front Desk</span>
+    </div>
+    <div class="flex items-center gap-x-2">
+      <span id="status" class="inline-flex items-center gap-x-1.5 py-1 px-2.5 rounded-full text-xs font-medium"></span>
+      <button type="button" class="hs-dark-mode-active:hidden block hs-dark-mode font-medium text-foreground rounded-full hover:bg-muted-hover focus:outline-hidden focus:bg-muted-focus" data-hs-theme-click-value="dark" aria-label="Dark mode">
+        <span class="inline-flex shrink-0 justify-center items-center size-8">
+          <svg class="shrink-0 size-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        </span>
+      </button>
+      <button type="button" class="hs-dark-mode-active:block hidden hs-dark-mode font-medium text-foreground rounded-full hover:bg-muted-hover focus:outline-hidden focus:bg-muted-focus" data-hs-theme-click-value="light" aria-label="Light mode">
+        <span class="inline-flex shrink-0 justify-center items-center size-8">
+          <svg class="shrink-0 size-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+        </span>
+      </button>
+    </div>
+  </nav>
+</header>
+
+<!-- Toasts (Preline toast markup, added by script) -->
+<div id="toasts" class="fixed top-16 inset-x-0 z-50 flex flex-col items-center gap-2 px-4 pointer-events-none"></div>
+
+<main class="max-w-6xl mx-auto px-4 sm:px-6 py-6">
+
+  <!-- Alert -->
+  <div id="alert" class="hidden mb-6 bg-red-50 border border-red-200 text-sm text-red-800 rounded-lg p-4 dark:bg-red-500/10 dark:border-red-900 dark:text-red-400" role="alert" tabindex="-1" aria-labelledby="alert-title">
+    <div class="flex">
+      <svg class="shrink-0 size-4 mt-0.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+      <div class="ms-3 grow">
+        <h3 id="alert-title" class="font-semibold">Call ended</h3>
+        <p id="alert-text" class="mt-1"></p>
+        <div class="mt-3 flex gap-x-4">
+          <button id="reconnect" type="button" class="hidden font-semibold hover:underline focus:outline-hidden focus:underline">Call again</button>
+          <button id="dismiss" type="button" class="font-semibold hover:underline focus:outline-hidden focus:underline">Dismiss</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mobile: call, caller, transcript, appointments, registration, messages. Desktop: side column + transcript. -->
+  <div class="grid lg:grid-cols-12 lg:grid-rows-[auto_auto_auto_auto_auto_1fr] gap-x-6 gap-y-5 lg:gap-y-0">
+
+    <!-- Call -->
+    <section class="lg:col-span-4 lg:row-start-1 lg:mb-6 bg-card border border-card-line shadow-2xs rounded-xl p-5">
+      <div class="flex items-center gap-x-4">
+        <button id="talk" type="button" aria-label="Start call"
+          class="shrink-0 inline-flex justify-center items-center size-14 rounded-full border border-transparent bg-primary text-primary-foreground hover:bg-primary-hover focus:outline-hidden focus:bg-primary-focus disabled:opacity-50 disabled:pointer-events-none transition">
+          <svg id="icon-call" class="size-6" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+          <svg id="icon-end" class="hidden size-6" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+        </button>
+        <div class="grow min-w-0">
+          <p id="talk-label" class="font-semibold text-foreground">Start call</p>
+          <p id="talk-sub" class="text-sm text-muted-foreground-1">Headphones recommended</p>
+        </div>
+        <span id="timer" class="text-sm font-mono tabular-nums text-muted-foreground-1"></span>
+      </div>
+      <div class="mt-4 flex w-full h-1 bg-surface-1 rounded-full overflow-hidden" role="progressbar" aria-label="Microphone level" aria-valuemin="0" aria-valuemax="100">
+        <div id="level" class="rounded-full bg-primary transition-[width] duration-100" style="width:0%"></div>
+      </div>
+    </section>
+
+    <!-- Caller -->
+    <section class="lg:col-span-4 lg:row-start-2 lg:mb-6 bg-card border border-card-line shadow-2xs rounded-xl">
+      <div class="px-5 pt-4 pb-1 flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-foreground">Caller</h2>
+        <span id="caller-badge"></span>
+      </div>
+      <div id="caller" class="px-5 pb-5 pt-2"></div>
+    </section>
+
+    <!-- Transcript -->
+    <section class="lg:col-span-8 lg:col-start-5 lg:row-start-1 lg:row-span-6 flex flex-col bg-card border border-card-line shadow-2xs rounded-xl min-h-80 lg:h-[calc(100vh-7.5rem)] lg:sticky lg:top-20">
+      <div class="px-5 py-3.5 border-b border-card-line flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-foreground">Transcript</h2>
+        <button type="button" id="log-toggle" class="hs-collapse-toggle inline-flex items-center gap-x-1 text-xs font-medium text-muted-foreground-1 hover:text-foreground focus:outline-hidden focus:text-foreground"
+          aria-expanded="false" aria-controls="log" data-hs-collapse="#log">
+          Call log
+          <svg class="hs-collapse-open:rotate-180 shrink-0 size-3.5 transition" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+      </div>
+      <div id="log" class="hs-collapse hidden w-full overflow-hidden transition-[height] duration-300 border-b border-card-line" aria-labelledby="log-toggle">
+        <div id="activity" class="px-5 py-4 max-h-56 overflow-y-auto bg-surface/50"></div>
+      </div>
+      <ul id="chat" class="grow p-5 space-y-4 overflow-y-auto max-h-[28rem] lg:max-h-none">
+        <li id="chat-empty" class="h-full min-h-40 flex flex-col items-center justify-center text-center">
+          <p class="text-sm font-medium text-foreground">No conversation yet</p>
+          <p class="mt-1 text-sm text-muted-foreground-1">Start a call to register, check, book or cancel an appointment.</p>
+        </li>
+      </ul>
+    </section>
+
+    <!-- Appointments -->
+    <section class="lg:col-span-4 lg:row-start-3 lg:mb-6 bg-card border border-card-line shadow-2xs rounded-xl">
+      <div class="px-5 pt-4 pb-2"><h2 class="text-sm font-semibold text-foreground">Upcoming appointments</h2></div>
+      <ul id="appts" class="px-5 pb-4 divide-y divide-card-line"></ul>
+    </section>
+
+    <!-- New patient -->
+    <section id="reg-card" class="hidden lg:col-span-4 lg:row-start-4 lg:mb-6 bg-card border border-card-line shadow-2xs rounded-xl">
+      <div class="px-5 pt-4 pb-2 flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-foreground">New patient</h2>
+        <span id="reg-badge"></span>
+      </div>
+      <dl id="form" class="px-5 pb-3 grid grid-cols-3 gap-x-3 gap-y-2 text-sm"></dl>
+      <p id="reg-note" class="hidden mx-5 mb-5 text-sm rounded-lg p-3"></p>
+    </section>
+
+    <!-- Text messages (simulated patient phone) -->
+    <section class="lg:col-span-4 lg:row-start-5 lg:mb-6 bg-card border border-card-line shadow-2xs rounded-xl">
+      <div class="px-5 pt-4 pb-2 flex items-center justify-between">
+        <h2 class="text-sm font-semibold text-foreground">Text messages</h2>
+        <span class="inline-flex items-center py-0.5 px-2 rounded-full text-xs font-medium bg-surface text-surface-foreground border border-line-2">Test phone</span>
+      </div>
+      <ul id="sms" class="px-5 pb-5 space-y-2 max-h-56 overflow-y-auto"></ul>
+    </section>
+  </div>
+</main>
+
+<script>
+const RATE = 24000;
+const AGENT = 'front_desk';
+const $ = id => document.getElementById(id);
+
+// ---- audio worklets: mic -> 100 ms PCM16 chunks; player = queue that can be cleared (barge-in) ----
+const WORKLETS = `
+class Mic extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Int16Array(${RATE / 10}); this.n = 0; this.sum = 0; }
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (!ch) return true;
+    for (let i = 0; i < ch.length; i++) {
+      const s = Math.max(-1, Math.min(1, ch[i]));
+      this.sum += s * s;
+      this.buf[this.n++] = s < 0 ? s * 32768 : s * 32767;
+      if (this.n === this.buf.length) {
+        this.port.postMessage({ pcm: this.buf.buffer, level: Math.sqrt(this.sum / this.n) }, [this.buf.buffer]);
+        this.buf = new Int16Array(${RATE / 10}); this.n = 0; this.sum = 0;
+      }
+    }
+    return true;
+  }
+}
+class Player extends AudioWorkletProcessor {
+  constructor() {
+    super(); this.q = []; this.off = 0; this.played = 0; this.since = 0;
+    this.port.onmessage = e => {
+      if (e.data === 'clear') {
+        let n = -this.off; for (const b of this.q) n += b.length;
+        this.q = []; this.off = 0;
+        this.port.postMessage({ cleared: Math.max(n, 0) * 2 });
+      } else this.q.push(new Int16Array(e.data));
+    };
+  }
+  process(_, outputs) {
+    const out = outputs[0][0]; let i = 0;
+    while (i < out.length && this.q.length) {
+      const b = this.q[0], k = Math.min(out.length - i, b.length - this.off);
+      for (let j = 0; j < k; j++) out[i + j] = b[this.off + j] / 32768;
+      i += k; this.off += k; this.played += k;
+      if (this.off === b.length) { this.q.shift(); this.off = 0; }
+    }
+    out.fill(0, i);
+    if ((this.since += out.length) >= ${RATE / 20}) {  // report every 50 ms
+      this.since = 0;
+      this.port.postMessage({ played: this.played * 2, busy: this.q.length > 0 });
+    }
+    return true;
+  }
+}
+registerProcessor('mic', Mic);
+registerProcessor('player', Player);`;
+
+let ctx, ws, stream, player, clearEstimate = 0, ready = false, t0 = 0, timerId;
+
+// ---- UI helpers (model/user text always via textContent, never innerHTML) ----
+const el = (tag, cls, ...kids) => { const e = document.createElement(tag); if (cls) e.className = cls; e.append(...kids); return e; };
+
+// Preline soft badges / alerts
+const SOFT = {
+  gray:   'bg-surface text-surface-foreground border border-line-2',
+  blue:   'bg-primary-50 text-primary-700 border border-primary-200 dark:bg-primary-500/10 dark:text-primary-400 dark:border-primary-900',
+  teal:   'bg-teal-50 text-teal-700 border border-teal-200 dark:bg-teal-500/10 dark:text-teal-400 dark:border-teal-900',
+  yellow: 'bg-yellow-50 text-yellow-700 border border-yellow-200 dark:bg-yellow-500/10 dark:text-yellow-400 dark:border-yellow-900',
+  red:    'bg-red-50 text-red-700 border border-red-200 dark:bg-red-500/10 dark:text-red-400 dark:border-red-900',
+  violet: 'bg-violet-50 text-violet-700 border border-violet-200 dark:bg-violet-500/10 dark:text-violet-400 dark:border-violet-900',
+};
+const DOT = { gray: 'bg-muted-foreground-1', blue: 'bg-primary', teal: 'bg-teal-500', yellow: 'bg-yellow-500', red: 'bg-red-500', violet: 'bg-violet-500' };
+const badge = (tone, text, dot = false) => el('span', 'inline-flex items-center gap-x-1.5 py-0.5 px-2 rounded-full text-xs font-medium ' + SOFT[tone],
+  ...(dot ? [el('span', 'size-1.5 inline-block rounded-full ' + DOT[tone])] : []), text);
+
+const STATES = {
+  idle:       ['Offline', 'gray'],
+  connecting: ['Connecting', 'yellow'],
+  listening:  ['Listening', 'teal'],
+  hearing:    ['Hearing you', 'blue'],
+  thinking:   ['Thinking', 'yellow'],
+  speaking:   ['Speaking', 'violet'],
+  slow:       ['Waiting for reply', 'yellow'],
+  resuming:   ['Reconnecting', 'yellow'],
+  ended:      ['Call ended', 'gray'],
+  error:      ['Disconnected', 'red'],
+};
+let state = 'idle';
+function setStatus(s) {
+  state = s;
+  const [text, tone] = STATES[s];
+  $('status').replaceWith(Object.assign(badge(tone, text, true), { id: 'status' }));
+  if (ws) $('talk-sub').textContent = text;  // in a call, the call card shows the live state in large text
+}
+
+// Preline chat bubbles: assistant on the left, caller on the right. A bubble is placed the moment someone starts
+// talking (typing dots) and filled when the text arrives: the caller's transcript often lands after the reply has
+// started, so filling in place keeps the order right. Pending bubbles fill first-in, first-out.
+const pending = { user: [], ai: [] };
+const dots = () => el('span', 'inline-flex gap-x-1 py-1.5', ...[0, 150, 300].map(d =>
+  Object.assign(el('span', 'size-1.5 rounded-full bg-current opacity-60 animate-bounce'), { style: `animation-delay:${d}ms` })));
+function bubble(who, text) {
+  $('chat-empty')?.remove();
+  const box = who === 'user'
+    ? el('div', 'bg-primary text-primary-foreground rounded-2xl rounded-br-md px-4 py-2.5 text-sm shadow-2xs')
+    : el('div', 'bg-layer border border-layer-line rounded-2xl rounded-tl-md px-4 py-2.5 text-sm text-foreground');
+  const li = who === 'user' ? el('li', 'flex justify-end ms-10', box)
+    : el('li', 'flex gap-x-2.5 me-10',
+        el('span', 'shrink-0 inline-flex items-center justify-center size-8 rounded-full bg-surface border border-line-2 text-xs font-semibold text-foreground', 'FD'), box);
+  if (text === undefined) { box.append(dots()); pending[who].push(box); } else box.append(text);
+  $('chat').append(li);
+  $('chat').scrollTop = $('chat').scrollHeight;
+}
+function fill(who, text, missing) {
+  const box = pending[who].shift();
+  if (!box) return text && bubble(who, text);
+  if (text) box.replaceChildren(text);
+  else if (missing) box.replaceChildren(el('span', 'italic opacity-80', missing));
+  else box.parentElement.remove();  // nothing said (e.g. a noise): drop the bubble
+}
+function note(text) {  // a line in the transcript about the call itself
+  $('chat').append(el('li', 'text-center text-xs text-muted-foreground-1', text));
+}
+
+// Call log: Preline timeline, newest first
+const KIND = { tool: 'blue', info: 'gray', warn: 'yellow' };
+function activity(kind, label, text) {
+  const t = ((performance.now() - t0) / 1000).toFixed(1) + ' s';
+  $('activity').prepend(el('div', 'flex gap-x-3 pb-3',
+    el('span', 'shrink-0 w-12 text-end text-xs tabular-nums text-muted-foreground-1 pt-0.5', t),
+    el('div', 'min-w-0', badge(KIND[kind], label), el('p', 'mt-1 text-xs text-muted-foreground-2 break-words font-mono', text))));
+}
+
+const svg = (...paths) => { const NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg');
+  s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('class', 'size-4'); s.setAttribute('fill', 'none'); s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '2'); s.setAttribute('stroke-linejoin', 'round');
+  for (const d of paths) { const p = document.createElementNS(NS, 'path'); p.setAttribute('d', d); s.append(p); } return s; };
+// Preline toast (soft), removed after 8 s
+function toast(title, text) {
+  const t = el('div', 'pointer-events-auto w-full max-w-sm bg-layer border border-layer-line rounded-xl shadow-lg transition duration-300',
+    el('div', 'flex p-4 gap-x-3',
+      el('span', 'shrink-0 inline-flex items-center justify-center size-8 rounded-full ' + SOFT.blue, svg('M22 7l-10 6L2 7', 'M2 5h20v14H2z')),
+      el('div', 'min-w-0', el('p', 'text-sm font-semibold text-foreground', title), el('p', 'mt-0.5 text-sm text-muted-foreground-2', text))));
+  t.setAttribute('role', 'status');
+  $('toasts').prepend(t);
+  setTimeout(() => { t.classList.add('opacity-0'); setTimeout(() => t.remove(), 300); }, 8000);
+}
+
+function showError(msg, reconnect = false) {
+  $('alert-text').textContent = msg;
+  $('reconnect').classList.toggle('hidden', !reconnect);
+  $('alert').classList.remove('hidden');
+}
+
+const empty = (list, text) => $(list).replaceChildren(el('li', 'py-2 text-sm text-muted-foreground-1', text));
+
+// ---- caller (the Session's state, exactly as the server reports it after every skill call) ----
+const DEMO = [['Asha', '98123 45678'], ['Vikram', '98450 12367']];
+function showCaller({ patient, code_pending_for, choosing_between }) {
+  const initials = n => n.split(/\s+/).map(w => w[0]).slice(0, 2).join('').toUpperCase();
+  let body, tag;
+  if (patient) {
+    tag = badge('teal', 'Verified', true);
+    body = el('div', 'flex items-center gap-x-3',
+      el('span', 'shrink-0 inline-flex items-center justify-center size-10 rounded-full bg-primary text-primary-foreground text-sm font-semibold', initials(patient.name)),
+      el('div', 'min-w-0', el('p', 'font-medium text-foreground truncate', patient.name), el('p', 'text-sm text-muted-foreground-1', `Patient ID ${patient.id}`)));
+  } else if (choosing_between) {
+    tag = badge('blue', 'Select patient', true);
+    body = el('p', 'text-sm text-foreground', `This number belongs to ${choosing_between.join(' and ')}.`);
+  } else if (code_pending_for) {
+    tag = badge('yellow', 'Code sent', true);
+    body = el('p', 'text-sm text-foreground', 'Waiting for the verification code.');
+  } else {
+    tag = badge('gray', 'Not verified');
+    body = el('div', 'space-y-2',
+      el('p', 'text-sm text-muted-foreground-1', 'Test patients'),
+      el('ul', 'space-y-1', ...DEMO.map(([n, p]) => el('li', 'flex justify-between text-sm',
+        el('span', 'text-foreground', n), el('span', 'font-mono tabular-nums text-muted-foreground-2', p)))));
+  }
+  $('caller-badge').replaceChildren(tag);
+  $('caller').replaceChildren(body);
+}
+
+// ---- appointments: Preline list group with a date block ----
+let appts = [];
+function showAppointments(list) {
+  if (!list.length) return empty('appts', 'None');
+  $('appts').replaceChildren(...list.map(a => {
+    const [weekday, day, month] = a.date.split(' ');  // "Friday 27 November 2026"
+    return el('li', 'flex items-center gap-x-3 py-3',
+      el('div', 'shrink-0 w-12 text-center rounded-lg border border-line-2 overflow-hidden',
+        el('p', 'bg-surface text-[10px] font-semibold uppercase tracking-wide text-muted-foreground-1 py-0.5', month.slice(0, 3)),
+        el('p', 'text-lg font-semibold text-foreground leading-8', day)),
+      el('div', 'grow min-w-0',
+        el('p', 'text-sm font-medium text-foreground truncate', `${a.doctor}`),
+        el('p', 'text-xs text-muted-foreground-1 truncate', `${weekday.slice(0, 3)}, ${a.time} · ${a.reason}`)),
+      el('span', 'text-xs font-mono text-muted-foreground-1', `#${a.appointment_id}`));
+  }));
+}
+
+// ---- registration ----
+const FIELDS = [['name', 'Name'], ['spelled', 'Spelling'], ['phone', 'Mobile'], ['sex', 'Sex'], ['dob', 'Date of birth'], ['age', 'Age']];
+function fillForm(v = {}) {
+  $('form').replaceChildren(...FIELDS.filter(([k]) => v[k] !== undefined && v[k] !== '' && v[k] !== null).flatMap(([k, label]) => [
+    el('dt', 'text-muted-foreground-1', label),
+    el('dd', 'col-span-2 font-medium text-foreground break-words', String(v[k])),
+  ]));
+}
+function regState(tone, label, note) {
+  $('reg-badge').replaceChildren(badge(tone, label, true));
+  $('reg-note').className = note ? 'mx-5 mb-5 text-sm rounded-lg p-3 ' + SOFT[tone] : 'hidden';
+  $('reg-note').textContent = note || '';
+}
+
+function resetDesk() {
+  appts = []; pending.user = []; pending.ai = [];
+  fillForm();
+  $('reg-card').classList.add('hidden');
+  showCaller({ patient: null, code_pending_for: null, choosing_between: null });
+  empty('appts', 'Shown once the caller is verified.');
+  empty('sms', 'No messages.');
+}
+
+function onDesk({ skill, args, result: r = {}, state }) {
+  showCaller(state);
+  if (skill === 'start_registration' || (skill === 'confirm_code' && r.status === 'registered')) {
+    $('reg-card').classList.remove('hidden');
+    const rb = r.read_back;
+    if (skill === 'start_registration')
+      fillForm(rb ? { name: rb.name, spelled: rb.spelled, phone: rb.phone_digits.replaceAll(' ', ''),
+                      sex: rb.sex, dob: rb.date_of_birth, age: rb.age }
+                  : { name: `${args.first_name} ${args.last_name}`.trim(), phone: args.phone, sex: args.sex,
+                      dob: args.dob, age: args.age });
+    if (r.status === 'code_sent') regState('yellow', 'Awaiting code');
+    else if (r.status === 'invalid') regState('red', 'Incomplete', (r.problems || []).join('; '));
+    else if (r.status === 'registered') regState('teal', `Registered · ID ${r.patient_id}`);
+  }
+  if (skill === 'my_appointments' && r.appointments) { appts = r.appointments; showAppointments(appts); }
+  if (skill === 'book_appointment' && r.status === 'booked') { appts = [...appts, r]; showAppointments(appts); }
+  if (skill === 'cancel_appointment' && r.status === 'cancelled') {
+    appts = appts.filter(a => a.appointment_id !== r.appointment_id); showAppointments(appts);
+  }
+}
+
+function onSms({ to, text }) {
+  $('sms').querySelector('li:not([data-sms])')?.remove();
+  const li = el('li', 'bg-surface border border-line-2 rounded-xl rounded-tl-sm px-3 py-2',
+    el('p', 'text-sm text-foreground', text),
+    el('p', 'mt-0.5 text-xs text-muted-foreground-1', `To ${to} · ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`));
+  li.dataset.sms = '1';
+  $('sms').prepend(li);
+  toast('New text message', text);
+}
+
+// ---- server messages ----
+function onLog({ event, detail }) {
+  switch (event) {
+    case 'input_audio_buffer.speech_started': setStatus('hearing'); bubble('user'); break;
+    case 'input_audio_buffer.speech_stopped': setStatus('thinking'); break;
+    case 'first_audio_delta': setStatus('speaking'); bubble('ai'); break;
+    case 'user_said': fill('user', detail); break;
+    case 'user_unheard': fill('user', '', 'Not caught. Please repeat.'); activity('warn', 'Not caught', detail); break;
+    case 'model_said': fill('ai', detail); break;
+    case 'response.done': while (pending.ai.length) fill('ai', ''); break;  // a reply cut before any text
+    case 'tool_call': activity('tool', 'Action', detail); break;
+    case 'filler': activity('info', 'Filler', detail); break;
+    case 'barge_in': activity('warn', 'Interrupted', detail); break;
+    case 'conversation.item.truncated': activity('info', 'Truncated', `reply cut at ${detail} ms`); break;
+    case 'STALL': setStatus('slow'); activity('warn', 'Stall', detail); break;
+    case 'RESUME': setStatus('resuming'); note('Connection dropped. Reconnected.'); activity('warn', 'Reconnected', detail); break;
+  }
+}
+function onMessage(e) {
+  if (e.data instanceof ArrayBuffer) { player.port.postMessage(e.data, [e.data]); return; }
+  const m = JSON.parse(e.data);
+  if (m.type === 'log') onLog(m);
+  else if (m.type === 'desk') onDesk(m);
+  else if (m.type === 'sms') onSms(m);
+  else if (m.type === 'clear') { clearEstimate = m.estimate; player.port.postMessage('clear'); }
+  else if (m.type === 'status' && m.state === 'ready') {
+    ready = true; setStatus('listening');
+    activity('info', 'Connected', `limit ${m.limit_s / 60} min`);
+  }
+  else if (m.type === 'ended') { activity('info', 'Ended', m.reason); stop('ended'); }
+  else if (m.type === 'error') {
+    showError(m.message, m.reconnect);
+    activity('warn', 'Disconnected', m.message);
+    stop('error');
+  }
+}
+
+// ---- start / stop ----
+const BTN_CALL = ['bg-primary', 'text-primary-foreground', 'hover:bg-primary-hover', 'focus:bg-primary-focus'];
+const BTN_END = ['bg-red-600', 'text-white', 'hover:bg-red-700', 'focus:bg-red-700'];
+function talkButton(inCall) {
+  $('talk-label').textContent = inCall ? 'End call' : 'Start call';
+  $('talk').setAttribute('aria-label', inCall ? 'End call' : 'Start call');
+  $('icon-call').classList.toggle('hidden', inCall);
+  $('icon-end').classList.toggle('hidden', !inCall);
+  $('talk').classList.remove(...BTN_CALL, ...BTN_END);
+  $('talk').classList.add(...(inCall ? BTN_END : BTN_CALL));
+}
+
+async function start() {
+  $('alert').classList.add('hidden');
+  $('talk').disabled = true;
+  resetDesk();
+  setStatus('connecting');
+  try {
+    ctx = new AudioContext({ sampleRate: RATE });
+    await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLETS], { type: 'text/javascript' })));
+    // autoGainControl off: browser auto-gain can mute the first ~0.7 s of speech
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false } });
+  } catch (err) {
+    showError('Microphone not available: ' + err.message);
+    return stop('error');
+  }
+  player = new AudioWorkletNode(ctx, 'player', { numberOfInputs: 0, outputChannelCount: [1] });
+  player.connect(ctx.destination);
+  player.port.onmessage = ({ data }) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if ('cleared' in data) ws.send(JSON.stringify({ cleared: data.cleared, estimate: clearEstimate }));
+    else {
+      ws.send(JSON.stringify({ played: data.played }));
+      if (!data.busy && state === 'speaking') setStatus('listening');
+    }
+  };
+  const mic = new AudioWorkletNode(ctx, 'mic', { numberOfOutputs: 0 });
+  ctx.createMediaStreamSource(stream).connect(mic);
+  mic.port.onmessage = ({ data }) => {
+    $('level').style.width = Math.min(100, data.level * 400) + '%';
+    if (ready && ws.readyState === WebSocket.OPEN) ws.send(data.pcm);
+  };
+
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?agent=${AGENT}`);
+  ws.binaryType = 'arraybuffer';
+  ws.onmessage = onMessage;
+  ws.onclose = () => { if (ws) stop(ready ? 'ended' : 'error'); };
+  ws.onerror = () => showError('Lost the connection to the server.', true);
+
+  t0 = performance.now();
+  timerId = setInterval(() => {
+    const s = Math.floor((performance.now() - t0) / 1000);
+    $('timer').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }, 500);
+  talkButton(true);
+  $('talk').disabled = false;
+}
+
+function stop(next = 'ended') {
+  const w = ws; ws = null; ready = false;
+  w?.close();
+  stream?.getTracks().forEach(t => t.stop());
+  ctx?.close();
+  ctx = stream = player = null;
+  clearInterval(timerId);
+  $('level').style.width = '0%';
+  $('talk-sub').textContent = 'Headphones recommended';
+  talkButton(false);
+  $('talk').disabled = false;
+  setStatus(next);
+}
+
+$('talk').onclick = () => (ws ? stop() : start());
+$('reconnect').onclick = () => { if (!ws) start(); };
+$('dismiss').onclick = () => $('alert').classList.add('hidden');
+setStatus('idle');
+resetDesk();
+</script>
+<!-- Preline UI JS (collapse, theme switch) -->
+<script src="https://cdn.jsdelivr.net/npm/preline@5.1.0/dist/preline.js"></script>
+</body>
+</html>

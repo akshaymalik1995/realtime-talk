@@ -1,0 +1,2 @@
+# The server (python -m app). Python 3.11+ (tomllib). Notebooks need more: see .venv.
+websockets==17.4

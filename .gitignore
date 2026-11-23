@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+# databases, phone-server certificates and private keys, test output
+data/
+course/build/
+demo_skills/
+.playwright-mcp/
+.flashback/
+.wwebjs_cache/
+.env

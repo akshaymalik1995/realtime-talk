@@ -1,0 +1,11 @@
+.venv
+.flashback
+.wwebjs_cache
+.playwright-mcp
+data
+live
+web
+course
+*.ipynb
+**/__pycache__
+assets/*.npy

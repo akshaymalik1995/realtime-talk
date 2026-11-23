@@ -1,0 +1,45 @@
+# Production settings: APP_CONFIG=config/production.toml. The API key comes only from OPENAI_API_KEY.
+# Put a TLS-terminating reverse proxy (nginx, Caddy, a cloud load balancer) in front: browsers need
+# https + wss for the microphone, and the proxy must allow websocket upgrades on /ws.
+
+[server]
+host = "0.0.0.0"
+port = 8000
+origins = ["https://desk.example.com"]   # the page's public origin(s)
+max_sessions = 50
+session_limit_s = 600
+drain_s = 30
+log_format = "json"
+log_level = "INFO"
+
+[openai]
+model = "gpt-realtime-mini"
+voice = "marin"
+transcribe_model = "gpt-4o-mini-transcribe"
+max_output_tokens = 1000
+
+[resilience]
+stall_s = 5
+ping_timeout_s = 5
+max_resumes = 2
+
+[clinic]
+name = "City Care Clinic"
+
+[store]
+path = "/data/app.db"   # a mounted volume
+seed_demo = false
+
+[otp]
+ttl_s = 300
+max_tries = 3
+max_sends = 3
+
+[skills]
+timeout_s = 10
+filler_audio = "assets/filler_marin.pcm"
+
+[agents.front_desk]
+prompt = "prompts/front_desk.md"
+toolsets = ["identity", "registration", "appointments", "clinic_info"]
+vad = { type = "server_vad", silence_duration_ms = 900 }
