@@ -78,7 +78,7 @@ async def attach(s, key, call_id):
 async def converse(s, key, offers: asyncio.Queue, send_answer, chunks, seconds: float, instructions: str,
                    tools: list, run_tool, vad: dict | None = None, on_note=None, on_ready=None,
                    stop: asyncio.Event | None = None, max_resumes: int = 2, create=None, connect=None,
-                   hangup=None) -> list[tuple]:
+                   hangup=None, transcript_first: bool = False) -> list[tuple]:
     """One WebRTC conversation. offers: the page's SDP offer arrives here; send_answer(sdp) returns OpenAI's.
     chunks: the page's message stream, drained only to notice it leaving. create/connect: injectable for tests."""
     create, connect = create or create_call, connect or attach
@@ -114,6 +114,7 @@ async def converse(s, key, offers: asyncio.Queue, send_answer, chunks, seconds: 
         async def events():
             nonlocal speaking, resumes
             ws = await connect(s, key, call_id)
+            first = realtime.TranscriptFirst(ws) if transcript_first else None
             if on_ready:
                 on_ready()
             while True:
@@ -125,16 +126,26 @@ async def converse(s, key, offers: asyncio.Queue, send_answer, chunks, seconds: 
                             raise RuntimeError(e["error"])
                         if kind == "input_audio_buffer.speech_started":
                             note(kind, "")
+                            if first:
+                                first.started()
                             if speaking:
                                 note("barge_in", "OpenAI stops and truncates the reply")
                         elif kind == "input_audio_buffer.speech_stopped":
                             note(kind)
+                            if first:
+                                first.stopped()
                         elif kind == "conversation.item.input_audio_transcription.delta":
                             note("user_partial", e.get("delta", ""))  # live captions
+                            if first:
+                                first.caption(e.get("delta", ""))
                         elif kind == "conversation.item.input_audio_transcription.completed":
                             note("user_said", e["transcript"].strip())
+                            if first:
+                                await first.heard(e["transcript"].strip())
                         elif kind == "conversation.item.input_audio_transcription.failed":
                             note("user_unheard", e.get("error", {}).get("message", ""))
+                            if first:
+                                await first.heard(None)
                         elif kind == "output_audio_buffer.started":
                             speaking = True
                             note("first_audio_delta")
@@ -155,6 +166,8 @@ async def converse(s, key, offers: asyncio.Queue, send_answer, chunks, seconds: 
                     note("RESUME", f"control link dropped ({type(exc).__name__}): re-attaching ({resumes}/{max_resumes})")
                     ws.transport.abort()
                     ws = await connect(s, key, call_id)
+                    if first:
+                        first.ws = ws
 
         runner = asyncio.create_task(events())
         waits = [runner, leave] + ([asyncio.create_task(stop.wait())] if stop else [])
@@ -170,5 +183,5 @@ async def converse(s, key, offers: asyncio.Queue, send_answer, chunks, seconds: 
         if call_id:
             try:  # end the call at OpenAI too: stops billing at once instead of at its own timeout
                 await hangup(call_id)
-            except Exception as e:
-                log.warning("hangup %s failed: %r", call_id, e)
+            except Exception as e:  # 404: the page's own goodbye already ended it
+                log.info("hangup %s: %r", call_id, e)

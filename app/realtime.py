@@ -17,6 +17,7 @@ import time
 import websockets
 from websockets.exceptions import ConnectionClosed
 
+from app.domain.numbers import spoken_digits
 from app.metrics import METRICS
 from app.settings import Settings
 
@@ -110,6 +111,55 @@ async def answer_tool_calls(ws, response: dict, run_tool) -> list[tuple]:
     return done
 
 
+class TranscriptFirst:
+    """Turn detection without the automatic reply, so we decide when the model answers.
+
+    Waiting for the transcript costs ~0.6 s, so only turns that need it wait. The live captions (streaming
+    transcription) show what the caller said before they stop:
+    - digits in their words (a phone number, a code): wait for the transcript, put it in the conversation with
+      spoken digits as digits, then reply. Measured: the model heard 8130653310 as 81306553310 three times while
+      the transcript had it right; with the transcript in context it got numbers right first time.
+    - other words: reply at once, no delay.
+    - no words yet (noise, the speaker's own echo, or a model without live captions): wait; an empty transcript
+      gets no reply. No transcript within wait_s: reply from the audio alone."""
+
+    def __init__(self, ws, wait_s: float = 2.0):
+        self.ws, self.wait_s, self.fallback, self.partial = ws, wait_s, None, ""
+
+    def started(self):
+        self.partial = ""
+
+    def caption(self, delta: str):
+        self.partial += delta
+
+    def stopped(self):
+        if self.fallback:
+            self.fallback.cancel()
+            self.fallback = None
+        words = self.partial.strip()
+        if words and not any(c.isdigit() for c in spoken_digits(words)):
+            asyncio.create_task(send(self.ws, {"type": "response.create"}))  # nothing to check: answer now
+            return
+        self.fallback = asyncio.create_task(self._reply_anyway())
+
+    async def _reply_anyway(self):
+        await asyncio.sleep(self.wait_s)
+        self.fallback = None
+        await send(self.ws, {"type": "response.create"})
+
+    async def heard(self, text: str | None):
+        """The transcript arrived (None: transcription failed)."""
+        if not self.fallback:  # not a turn we are holding (or the fallback already answered it)
+            return
+        self.fallback.cancel()
+        self.fallback = None
+        if text:
+            await send(self.ws, _message("system", f"Transcript of the caller's last words (use it for exact numbers "
+                                                   f"and spellings): {spoken_digits(text)}"))
+        if text or text is None:
+            await send(self.ws, {"type": "response.create"})
+
+
 def _message(role: str, text: str) -> dict:
     kind = "output_text" if role == "assistant" else "input_text"
     return {"type": "conversation.item.create",
@@ -127,7 +177,7 @@ async def replay(ws, history: list[tuple[str, str]], context: str = "") -> None:
 
 async def converse(ws, chunks, speaker, seconds: float, run_tool=None, filler_pcm: bytes | None = None,
                    barge_in: bool = True, on_note=None, stop: asyncio.Event | None = None,
-                   stall_s: float = 5, ping_timeout_s: float = 5) -> list[tuple]:
+                   stall_s: float = 5, ping_timeout_s: float = 5, transcript_first: bool = False) -> list[tuple]:
     """Full duplex for up to `seconds`: stream `chunks` (async iterator of PCM16 bytes) up while playing model
     audio down. Returns a log of (t, event, detail); on_note(t, event, detail) sees every line as it happens.
 
@@ -140,6 +190,7 @@ async def converse(ws, chunks, speaker, seconds: float, run_tool=None, filler_pc
     item_id, item_start, item_len = None, 0, 0  # model message now playing: stream start position + bytes
     filled = set()
     said_so_far = []  # the reply being generated, as text: if the link dies mid-reply, the next one finishes it
+    first = TranscriptFirst(ws) if transcript_first else None  # session turn detection must have create_response off
 
     def note(event, detail=""):
         log_.append((round(time.perf_counter() - t0, 2), event, detail))
@@ -179,6 +230,8 @@ async def converse(ws, chunks, speaker, seconds: float, run_tool=None, filler_pc
                 note("filler", f'"{FILLER_TEXT}" while {e["item"]["name"]} runs')
             elif kind == "input_audio_buffer.speech_started":
                 note(kind, f"{speaker.buffered_seconds():.2f}s of audio still queued")
+                if first:
+                    first.started()
                 if barge_in and (dropped := speaker.clear()):
                     heard = min(max(speaker.played - item_start, 0), item_len)
                     detail = f"dropped {dropped / BYTES_PER_S:.2f}s"
@@ -190,12 +243,20 @@ async def converse(ws, chunks, speaker, seconds: float, run_tool=None, filler_pc
                     note("barge_in", detail)
             elif kind == "input_audio_buffer.speech_stopped":
                 note(kind)
+                if first:
+                    first.stopped()
             elif kind == "conversation.item.input_audio_transcription.delta":
                 note("user_partial", e.get("delta", ""))  # live captions (streaming transcription models)
+                if first:
+                    first.caption(e.get("delta", ""))
             elif kind == "conversation.item.input_audio_transcription.completed":
                 note("user_said", e["transcript"].strip())
+                if first:
+                    await first.heard(e["transcript"].strip())
             elif kind == "conversation.item.input_audio_transcription.failed":  # the caller's words were not caught
                 note("user_unheard", e.get("error", {}).get("message", ""))
+                if first:
+                    await first.heard(None)
             elif kind == "response.output_audio_transcript.delta":
                 said_so_far.append(e.get("delta", ""))
             elif kind == "response.output_audio_transcript.done":

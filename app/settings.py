@@ -70,6 +70,8 @@ class Engine:
     tts: str = "openai"
     llm_model: str = "gpt-4o-mini"
     llm_timeout_s: float = 20.0
+    transcript_first: bool = True   # speech-to-speech engines: reply only once the caller's transcript is in the
+                                    # model's context (exact digits; ~0.4 s later; no reply to wordless noise)
 
 
 @dataclass(frozen=True)

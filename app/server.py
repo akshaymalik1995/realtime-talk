@@ -123,6 +123,9 @@ class App:
         session = Session(s, agent, emit=lambda m: loop.call_soon_threadsafe(out.put_nowait, m))
         spk = BrowserSpeaker(out)
         started, opened = time.monotonic(), []
+        # transcript first: the server detects turns but does not reply by itself; we ask once the words are in
+        first = s.engine.transcript_first and bool(s.openai.transcribe_model) and s.engine.kind != "cascade"
+        turns = {**session.config.vad, "create_response": False} if first and session.config.vad else session.config.vad
         offers: asyncio.Queue = asyncio.Queue(maxsize=1)  # webrtc engine: the page's SDP offer
 
         async def to_browser():
@@ -163,7 +166,7 @@ class App:
             out.put_nowait({"type": "status", "state": "ready", "limit_s": s.server.session_limit_s, "agent": agent})
 
         async def start():  # called again by converse_resilient after an OpenAI stall
-            ws = await self.start_session(session.instructions(), session.specs(), session.config.vad)
+            ws = await self.start_session(session.instructions(), session.specs(), turns)
             if not opened:
                 ready()
             opened.append(ws)
@@ -181,8 +184,8 @@ class App:
                 await webrtc.converse(
                     s, self.key, offers, lambda sdp: out.put(({"type": "rtc_answer", "sdp": sdp})), mic(),
                     seconds=s.server.session_limit_s, instructions=session.instructions(), tools=session.specs(),
-                    run_tool=session.run_tool, vad=session.config.vad, on_note=on_note, on_ready=ready,
-                    max_resumes=s.resilience.max_resumes, **self.rtc)
+                    run_tool=session.run_tool, vad=turns, on_note=on_note, on_ready=ready,
+                    max_resumes=s.resilience.max_resumes, transcript_first=first, **self.rtc)
             elif s.engine.kind == "cascade":
                 await cascade.converse(
                     self.parts, s, self.key, mic(), spk, seconds=s.server.session_limit_s,
@@ -193,7 +196,7 @@ class App:
                 await realtime.converse_resilient(
                     start, mic(), spk, seconds=s.server.session_limit_s, max_resumes=s.resilience.max_resumes,
                     context=session.context, on_note=on_note, run_tool=session.run_tool, filler_pcm=filler,
-                    stall_s=s.resilience.stall_s, ping_timeout_s=s.resilience.ping_timeout_s)
+                    stall_s=s.resilience.stall_s, ping_timeout_s=s.resilience.ping_timeout_s, transcript_first=first)
             out.put_nowait({"type": "ended", "reason": f"Time limit of {s.server.session_limit_s // 60} min reached."})
         except BrowserGone:
             log.info("browser left after %.0f s", time.monotonic() - started)

@@ -501,24 +501,49 @@ async def check_webrtc():
     """The WebRTC engine through the real server, with OpenAI faked: the page's offer goes to call creation with
     our prompt and tools (never the key), the answer comes back, the side connection runs the tool call, the page
     gets its events and the SMS, and the call is hung up when the page leaves."""
+    sent = []
+
+    class Wire:  # stands in for the OpenAI connection
+        async def send(self, m):
+            sent.append(json.loads(m)["type"])
+
+    async def turn(captions, transcript, wait=0.0):
+        sent.clear()
+        first.started()
+        if captions:
+            first.caption(captions)
+        first.stopped()
+        await asyncio.sleep(wait or 0.05)
+        if transcript is not ...:
+            await first.heard(transcript)
+        return list(sent)
+
+    first = realtime.TranscriptFirst(Wire(), wait_s=0.2)
+    assert await turn("What are your hours", "What are your hours?") == ["response.create"]       # no digits: at once
+    assert await turn("नौ आठ चार", "नौ आठ चार पाँच") == ["conversation.item.create", "response.create"]  # digits: words first
+    assert await turn("", "") == []                                                                # noise: no reply
+    assert await turn("", ..., wait=0.3) == ["response.create"]                                    # no transcript: reply anyway
+
     port, up = 8785, 8786
     s = test_settings({"APP__ENGINE__KIND": '"webrtc"', "APP__SERVER__PORT": str(port)})
-    calls, hung, outputs = [], [], []
+    calls, hung, outputs, notes = [], [], [], []
     call = {"type": "function_call", "name": "verify_patient", "call_id": "c1",
             "arguments": json.dumps({"phone": "9845012367"})}
 
     async def side(ws):  # the fake side connection: hears a number, proposes verify_patient, then speaks
         try:
             for e in ({"type": "input_audio_buffer.speech_started"},
-                      {"type": "conversation.item.input_audio_transcription.delta", "delta": "My number"},
+                      {"type": "conversation.item.input_audio_transcription.delta", "delta": "My number is nine eight four five"},
                       {"type": "input_audio_buffer.speech_stopped"},
                       {"type": "conversation.item.input_audio_transcription.completed", "transcript": "My number is 9845012367."},
                       {"type": "response.done", "response": {"status": "completed", "output": [call]}}):
                 await ws.send(json.dumps(e))
             async for raw in ws:
                 m = json.loads(raw)
-                if m["type"] == "conversation.item.create":
+                if m["type"] == "conversation.item.create" and m["item"]["type"] == "function_call_output":
                     outputs.append(m["item"]["output"])
+                elif m["type"] == "conversation.item.create":
+                    notes.append(m["item"]["content"][0]["text"])
                 elif m["type"] == "response.create":
                     for e in ({"type": "output_audio_buffer.started"},
                               {"type": "response.output_audio_transcript.done", "transcript": "Please read me the code."},
@@ -569,7 +594,9 @@ async def check_webrtc():
         < events.index("model_said"), events
     assert hung == ["rtc_test"], hung
     assert session["audio"]["input"]["transcription"]["model"], session  # captions configured
-    print("webrtc ok: offer -> call with prompt + tools, live captions, answer back, tool call on the side connection, "
+    assert session["audio"]["input"]["turn_detection"]["create_response"] is False, session  # transcript first
+    assert any("9845012367" in n for n in notes), notes  # the caller's words reached the model, digits as digits
+    print("webrtc ok: offer -> call with prompt + tools, live captions, transcript to the model, answer back, tool call on the side connection, "
           "page events + SMS, hung up on leave")
 
 
