@@ -42,9 +42,23 @@ class OpenAI:
     url: str = "wss://api.openai.com/v1/realtime"
     model: str = "gpt-realtime-mini"
     voice: str = "marin"
-    transcribe_model: str = "gpt-4o-mini-transcribe"
+    transcribe_model: str = "gpt-4o-mini-transcribe"  # captions only: the model hears the audio itself
+    transcribe_language: str = ""   # ISO code ("hi", "ta"); "" = guess per turn (short phrases often land in the
+                                    # wrong script: Hindi "हाँ" came back in Korean)
+    transcribe_prompt: str = ""     # a hint, for models that take one (gpt-realtime-whisper does not)
+    noise_reduction: str = ""       # "near_field" (headset), "far_field" (phone on speaker, laptop); "" = off
     max_output_tokens: int = 1000   # per response; audio counts (~300 tokens = ~10 s of speech)
     dev_key_ini: str = ""           # dev only: an ini file with [dev] openai_key
+
+    def transcription(self) -> dict | None:
+        """The input transcription config (the page's captions), or None."""
+        if not self.transcribe_model:
+            return None
+        return {"model": self.transcribe_model, **({"language": self.transcribe_language} if self.transcribe_language else {}),
+                **({"prompt": self.transcribe_prompt} if self.transcribe_prompt else {})}
+
+    def noise(self) -> dict | None:
+        return {"type": self.noise_reduction} if self.noise_reduction else None
 
 
 @dataclass(frozen=True)

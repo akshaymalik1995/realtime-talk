@@ -45,7 +45,9 @@ class STT:
         await realtime.collect(self.ws, "session.created")
         await realtime.send(self.ws, {"type": "session.update", "session": {"type": "transcription", "audio": {"input": {
             "format": {"type": "audio/pcm", "rate": realtime.RATE},
-            "transcription": {"model": self.s.openai.transcribe_model},
+            # this session also detects turns; streaming gpt-realtime-whisper can't, so use a batch model here
+            "transcription": {**self.s.openai.transcription(), **(
+                {"model": "gpt-4o-mini-transcribe"} if self.s.openai.transcribe_model == "gpt-realtime-whisper" else {})},
             "turn_detection": self.vad}}}})
         await realtime.collect(self.ws, "session.updated")
 

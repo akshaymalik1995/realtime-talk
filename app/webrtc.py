@@ -40,8 +40,8 @@ def call_config(s, instructions: str, tools: list, vad: dict | None) -> dict:
         "type": "realtime", "model": s.openai.model, "instructions": instructions,
         **({"tools": tools, "tool_choice": "auto"} if tools else {}),
         "max_output_tokens": s.openai.max_output_tokens,
-        "audio": {"input": {"turn_detection": vad,
-                            "transcription": {"model": s.openai.transcribe_model} if s.openai.transcribe_model else None},
+        "audio": {"input": {"turn_detection": vad, "transcription": s.openai.transcription(),
+                            "noise_reduction": s.openai.noise()},
                   "output": {"voice": s.openai.voice}},
     }
 
@@ -129,6 +129,8 @@ async def converse(s, key, offers: asyncio.Queue, send_answer, chunks, seconds: 
                                 note("barge_in", "OpenAI stops and truncates the reply")
                         elif kind == "input_audio_buffer.speech_stopped":
                             note(kind)
+                        elif kind == "conversation.item.input_audio_transcription.delta":
+                            note("user_partial", e.get("delta", ""))  # live captions
                         elif kind == "conversation.item.input_audio_transcription.completed":
                             note("user_said", e["transcript"].strip())
                         elif kind == "conversation.item.input_audio_transcription.failed":

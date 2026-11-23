@@ -75,7 +75,7 @@ def session_config(s: Settings, instructions: str, tools: list[dict], vad: dict 
         "max_output_tokens": s.openai.max_output_tokens,
         "audio": {
             "input": {"format": {"type": "audio/pcm", "rate": RATE}, "turn_detection": vad,
-                      "transcription": {"model": s.openai.transcribe_model} if s.openai.transcribe_model else None},
+                      "transcription": s.openai.transcription(), "noise_reduction": s.openai.noise()},
             "output": {"format": {"type": "audio/pcm", "rate": RATE}, "voice": s.openai.voice},
         },
     }
@@ -190,6 +190,8 @@ async def converse(ws, chunks, speaker, seconds: float, run_tool=None, filler_pc
                     note("barge_in", detail)
             elif kind == "input_audio_buffer.speech_stopped":
                 note(kind)
+            elif kind == "conversation.item.input_audio_transcription.delta":
+                note("user_partial", e.get("delta", ""))  # live captions (streaming transcription models)
             elif kind == "conversation.item.input_audio_transcription.completed":
                 note("user_said", e["transcript"].strip())
             elif kind == "conversation.item.input_audio_transcription.failed":  # the caller's words were not caught

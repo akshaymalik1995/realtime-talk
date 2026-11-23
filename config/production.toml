@@ -15,7 +15,9 @@ log_level = "INFO"
 [openai]
 model = "gpt-realtime-mini"
 voice = "marin"
-transcribe_model = "gpt-4o-mini-transcribe"
+transcribe_model = "gpt-realtime-whisper"     # streams the caller's words as they speak (live captions)
+transcribe_language = "hi"                    # Hindi + English callers; "ta" for a Tamil clinic, "" to guess
+noise_reduction = "far_field"                 # phones on speaker
 max_output_tokens = 1000
 
 # How the voice runs (README "Engines"): webrtc = audio straight from the browser to OpenAI (no frozen replies:

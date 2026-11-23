@@ -295,6 +295,13 @@ function fill(who, text, missing) {
   else if (missing) box.replaceChildren(el('span', 'italic opacity-80', missing));
   else box.parentElement.remove();  // nothing said (e.g. a noise): drop the bubble
 }
+function caption(delta) {  // live captions: the caller's words as they speak, into their newest bubble
+  if (!pending.user.length) bubble('user');
+  const box = pending.user[pending.user.length - 1];
+  box.dataset.partial = (box.dataset.partial || '') + delta;
+  box.replaceChildren(box.dataset.partial.trimStart(), el('span', 'inline-block w-1.5 h-4 ms-0.5 align-middle bg-current opacity-60 animate-pulse'));
+  $('chat').scrollTop = $('chat').scrollHeight;
+}
 function note(text) {  // a line in the transcript about the call itself
   $('chat').append(el('li', 'text-center text-xs text-muted-foreground-1', text));
 }
@@ -434,6 +441,7 @@ function onLog({ event, detail }) {
     case 'input_audio_buffer.speech_started': setStatus('hearing'); bubble('user'); break;
     case 'input_audio_buffer.speech_stopped': setStatus('thinking'); break;
     case 'first_audio_delta': setStatus('speaking'); bubble('ai'); break;
+    case 'user_partial': caption(detail); break;
     case 'user_said': fill('user', detail); break;
     case 'user_unheard': fill('user', '', 'Not caught. Please repeat.'); activity('warn', 'Not caught', detail); break;
     case 'model_said': fill('ai', detail); break;

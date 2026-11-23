@@ -42,6 +42,8 @@ def check_settings():
     s = test_settings({"APP__SERVER__PORT": "9001", "APP__OPENAI__MODEL": "gpt-x"})
     assert s.server.port == 9001 and s.openai.model == "gpt-x" and s.resilience.stall_s == 2.0
     assert s.agents["front_desk"].vad["silence_duration_ms"] == 900
+    t = test_settings({"APP__OPENAI__TRANSCRIBE_LANGUAGE": '"ta"', "APP__OPENAI__TRANSCRIBE_PROMPT": '""'}).openai
+    assert t.transcription() == {"model": t.transcribe_model, "language": "ta"}, t.transcription()
     for env, msg in [({"APP__SERVER__PROT": "1"}, "unknown key"), ({"APP__SERVER__PORT": '"80"'}, "expected int"),
                      ({"APP__STORE__SEED_DEMO": "1"}, "expected bool"), ({"APP__NOPE__X": "1"}, "unknown section"),
                      ({"APP__ENGINE__KIND": '"magic"'}, "engine.kind"),
@@ -495,7 +497,9 @@ async def check_webrtc():
 
     async def side(ws):  # the fake side connection: hears a number, proposes verify_patient, then speaks
         try:
-            for e in ({"type": "input_audio_buffer.speech_started"}, {"type": "input_audio_buffer.speech_stopped"},
+            for e in ({"type": "input_audio_buffer.speech_started"},
+                      {"type": "conversation.item.input_audio_transcription.delta", "delta": "My number"},
+                      {"type": "input_audio_buffer.speech_stopped"},
                       {"type": "conversation.item.input_audio_transcription.completed", "transcript": "My number is 9845012367."},
                       {"type": "response.done", "response": {"status": "completed", "output": [call]}}):
                 await ws.send(json.dumps(e))
@@ -548,10 +552,12 @@ async def check_webrtc():
     code = re.sub(r"\D", "", next(m for m in msgs if m["type"] == "sms")["text"])
     assert outputs and "code_sent" in outputs[0] and code not in outputs[0], outputs  # the model never saw it
     events = [m.get("event") for m in msgs if m["type"] == "log"]
-    assert events.index("user_said") < events.index("tool_call") < events.index("first_audio_delta") \
+    assert events.index("user_partial") < events.index("user_said") < events.index("tool_call") \
+        < events.index("first_audio_delta") \
         < events.index("model_said"), events
     assert hung == ["rtc_test"], hung
-    print("webrtc ok: offer -> call with prompt + tools, answer back, tool call on the side connection, "
+    assert session["audio"]["input"]["transcription"]["model"], session  # captions configured
+    print("webrtc ok: offer -> call with prompt + tools, live captions, answer back, tool call on the side connection, "
           "page events + SMS, hung up on leave")
 
 
