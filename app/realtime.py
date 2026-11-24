@@ -224,8 +224,9 @@ async def converse(ws, chunks, speaker, seconds: float, run_tool=None, filler_pc
                 speaker.write(b)
                 item_len += len(b)
             elif (kind == "response.output_item.added" and e["item"]["type"] == "function_call"
-                  and filler_pcm and e["response_id"] not in filled):
-                filled.add(e["response_id"])  # once per response, even if it makes several calls
+                  and filler_pcm and e["response_id"] not in filled and not responding):
+                filled.add(e["response_id"])  # once per response, even if it makes several calls; none if the
+                                              # model already said something ("One moment.") in this response
                 speaker.write(filler_pcm)
                 note("filler", f'"{FILLER_TEXT}" while {e["item"]["name"]} runs')
             elif kind == "input_audio_buffer.speech_started":

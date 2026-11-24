@@ -51,7 +51,7 @@ def _doctors(c, sql) -> list[dict]:
         days = (r[4] or "").split(",")
         week = [d for d in ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday") if d in days]
         out.append({"id": r[0], "name": f"Dr. {r[1].title()} {r[2].title()}", "specialty": r[3], "days": week,
-                    "_words": {r[1].lower(), r[2].lower(), *re.findall(r"[a-z]+", r[3].lower())}})
+                    "_words": set(re.findall(r"[a-z0-9]+", f"{r[1]} {r[2]} {r[3]}".lower()))})
     return out
 
 
@@ -62,11 +62,12 @@ def doctors(store) -> list[dict]:
 
 def find_doctor(c, sql, query: str) -> tuple[dict | None, dict | None]:
     """Resolve what the caller said ("Dr Kapoor", "the pediatrician", "cardiology") to exactly one doctor."""
-    words = [w for w in re.findall(r"[a-z]+", query.lower()) if w not in STOP_WORDS]
+    words = [w for w in re.findall(r"[a-z0-9]+", query.lower()) if w not in STOP_WORDS and len(w) >= 3]
     # prefixes, so "pediatrician" matches "pediatrics" and "cardio" matches "cardiology"
-    hit = lambda d: any(dw.startswith(w[:6]) for w in words if len(w) >= 3 for dw in d["_words"])  # noqa: E731
+    hits = lambda d: sum(any(dw.startswith(w[:6]) for dw in d["_words"]) for w in words)  # noqa: E731
     docs = _doctors(c, sql)
-    found = [d for d in docs if words and hit(d)]
+    best = max((hits(d) for d in docs), default=0)
+    found = [d for d in docs if best and hits(d) == best]  # the most words matched wins: "Meera Iyer" over "Meera"
     if len(found) == 1:
         return found[0], None
     names = [f"{d['name']} ({d['specialty']})" for d in docs]

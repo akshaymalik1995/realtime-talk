@@ -67,6 +67,23 @@ def check_settings():
     print("settings ok")
 
 
+def check_doctor_match():
+    """What the caller says resolves to one doctor; real DocAssist names like Doc1350 / Doc1190Verified once
+    made every lookup ambiguous (digits dropped, any one shared word counted as a match)."""
+    from app.domain.appointments import find_doctor
+    rows = [(1, "Meera", "Iyer", "General Medicine", "Monday"), (2, "Doc1190Verified", "Consultant", "Insurance", None),
+            (3, "Doc1350", "Clinic Doctor", "General Medicine", None), (4, "Meera", "Rao", "Pediatrics", None)]
+
+    class Rows:
+        execute = lambda self, sql, args: self  # noqa: E731
+        fetchall = lambda self: rows  # noqa: E731
+    for q, want in [("Dr. Doc1350 Clinic Doctor", 3), ("Doc1350", 3), ("Doc1190Verified", 2), ("Meera Iyer", 1),
+                    ("the pediatrician", 4), ("general medicine", None), ("Meera", None)]:
+        d, err = find_doctor(Rows(), {"doctors": ""}, q)
+        assert (d and d["id"]) == want and (d or err["status"] == "which_doctor"), (q, d, err)
+    print("doctor match ok")
+
+
 async def check_registry():
     from typing import Literal
     sets = registry.discover()
@@ -605,6 +622,7 @@ async def check_webrtc():
 
 async def check_all():
     check_settings()
+    check_doctor_match()
     await check_registry()
     await check_session()
     await check_resume()

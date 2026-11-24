@@ -17,10 +17,13 @@ Add SELECT ... FOR UPDATE on the doctor's day if that ever matters.
 """
 import configparser
 import contextlib
+import logging
 import os
 import threading
 
 import mysql.connector
+
+log = logging.getLogger(__name__)
 
 PHONE = "RIGHT(REGEXP_REPLACE(COALESCE(p.Phone_Number, ''), '[^0-9]', ''), 10) = RIGHT(%s, 10)"
 WHEN = "CAST({}appointment_date AS CHAR)"  # 'YYYY-MM-DD HH:MM:SS' text, like the demo store (no % patterns:
@@ -130,6 +133,16 @@ def _pool(creds: dict) -> _Idle:
 class DocAssistStore:
     def __init__(self, cfg, commit: bool = True):
         self.SQL, self.creds, self.commit = statements(cfg.hospital_id), credentials(cfg), commit
+        # a store opens with each call: ready a connection now, while the caller is still saying hello. Opening one
+        # to the remote MySQL takes 4-7 s, which the first lookup (the phone number) would otherwise make them hear.
+        threading.Thread(target=self.warm, daemon=True).start()
+
+    def warm(self):
+        pool = _pool(self.creds)
+        try:
+            pool.put(pool.get())  # get() pings a kept connection (reopening it if dead) or opens a new one
+        except mysql.connector.Error as e:
+            log.warning("docassist warm-up failed (the first lookup will connect): %s", e)
 
     @contextlib.contextmanager
     def connect(self, write: bool = False):
