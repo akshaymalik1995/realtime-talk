@@ -5,8 +5,10 @@ Why: a speech-to-speech model hearing digits directly repeats or drops one (meas
 right. So the transcript is the evidence: `fix_digits` replaces a phone number or code the model got wrong with
 the one the caller said. It only steps in when the model's value is impossible (wrong length) and the caller's
 words hold exactly one number that fits, so it never overrides a plausible value with a guess.
+Dates the same way (`fix_date`): the model heard "एक दिसंबर" (1 December) and looked up 8 December.
 """
 import re
+from datetime import date, timedelta
 
 # Spoken digits 0-9 as callers say them: English, Hindi, English words written in Devanagari, Tamil (formal and
 # everyday). ponytail: single digits only ("बारह" = 12 stays a word)
@@ -32,6 +34,19 @@ DIGIT_UNIT = re.compile(rf"(?:({'|'.join(REPEAT)})\s*)?({_d})", re.IGNORECASE)
 
 # Arguments we check, and the lengths a real value can have
 VALID = {"phone": (10, 12), "code": (6,)}
+
+# "1 दिसंबर", "एक दिसंबर", "3rd December". ponytail: day as digits or one digit word ("छब्बीस" = 26 is not read)
+MONTHS = {m: i for i, names in enumerate([
+    "january जनवरी", "february फरवरी फ़रवरी", "march मार्च", "april अप्रैल", "may मई", "june जून", "july जुलाई",
+    "august अगस्त", "september सितंबर सितम्बर", "october अक्टूबर", "november नवंबर नवम्बर", "december दिसंबर दिसम्बर"],
+    start=1) for m in names.split()}
+DATE_SAID = re.compile(rf"(?<![{_edge}])(\d{{1,2}}|{'|'.join(sorted(DIGIT, key=len, reverse=True))})\s*(?:st|nd|rd|th)?"
+                       rf"\s+({'|'.join(MONTHS)})", re.IGNORECASE)
+RELATIVE = re.compile(r"बाद|पहले|after|before", re.IGNORECASE)  # "26 नवंबर के बाद": the date is a bound, not the day
+WEEKDAYS = {w: i for i, names in enumerate(["monday सोमवार", "tuesday मंगलवार", "wednesday बुधवार",
+                                            "thursday गुरुवार बृहस्पतिवार", "friday शुक्रवार", "saturday शनिवार",
+                                            "sunday रविवार इतवार"]) for w in names.split()}
+WEEKDAY_SAID = re.compile("|".join(WEEKDAYS), re.IGNORECASE)
 
 
 def spoken_digits(text: str) -> str:
@@ -67,6 +82,39 @@ def fix_digits(args: dict, said: str) -> dict[str, tuple[str, str]]:
     return fixed
 
 
+def fix_date(args: dict, said: str, today: date) -> dict[str, tuple[str, str]]:
+    """Correct `args["date"]` in place when the caller named exactly one day and month and the model asked for
+    another day. Returns {"date": (model's value, caller's value)}."""
+    v = args.get("date")
+    try:
+        model = date.fromisoformat(v)
+    except (TypeError, ValueError):
+        return {}
+    if RELATIVE.search(said):
+        return {}  # "after the 26th": the caller gave a bound, not the day
+    days = {(int(DIGIT.get(d.lower(), d)), MONTHS[m.lower()]) for d, m in DATE_SAID.findall(said)}
+    named = {WEEKDAYS[w.lower()] for w in WEEKDAY_SAID.findall(said)}
+    if not days and len(named) == 1:  # "बुधवार को": wrong only if the model's date is another weekday
+        wd = named.pop()
+        if model.weekday() == wd:
+            return {}
+        want = today + timedelta(days=(wd - today.weekday() - 1) % 7 + 1)  # the next one after today
+    elif len(days) == 1 and len(re.findall(r"\d+", spoken_digits(said))) <= 1:
+        day, month = days.pop()
+        try:
+            want = date(today.year, month, day)
+            if want < today:
+                want = date(today.year + 1, month, day)
+        except ValueError:  # "31 नवंबर": nothing real to correct to
+            return {}
+        if want == model:
+            return {}
+    else:
+        return {}  # no single plain date ("1 or 2 December", "1 December at 2"): leave it
+    args["date"] = want.isoformat()
+    return {"date": (v, args["date"])}
+
+
 if __name__ == "__main__":
     assert spoken_digits("मेरा नंबर है नौ आठ चार पाँच, शून्य एक दो, तीन छः सात।") == "मेरा नंबर है 9845012367।"
     assert spoken_digits("एट वन थ्री जीरो सिक्स फाइव डबल थ्री वन जीरो।") == "8130653310।"
@@ -82,4 +130,17 @@ if __name__ == "__main__":
     assert fix_digits(a, "कोड है चार नौ सात तीन आठ आठ") == {"code": ("49738", "497388")}
     a = {"phone": "123"}                             # nothing that fits in the words: left for the tool to refuse
     assert fix_digits(a, "I don't remember") == {}
+    t = date(2026, 11, 24)
+    a = {"date": "2026-12-08"}
+    assert fix_date(a, "एक दिसंबर को कौन से स्लॉट खाली हैं?", t) == {"date": ("2026-12-08", "2026-12-01")}
+    a = {"date": "2026-11-27"}                       # "after the 26th": the model's next day is right
+    assert fix_date(a, "26 नवंबर के बाद कब फ्री हैं?", t) == {} and a["date"] == "2026-11-27"
+    a = {"date": "2027-01-03"}
+    assert fix_date(a, "3rd January please", t) == {}  # already right
+    a = {"date": "2026-11-25"}
+    assert fix_date(a, "बुधवार को", t) == {} and fix_date(a, "1 or 2 December", t) == {}  # right weekday / two dates
+    a = {"date": "2026-11-26"}                       # Thursday for "next Wednesday": the next Wednesday
+    assert fix_date(a, "Which slots next Wednesday?", t) == {"date": ("2026-11-26", "2026-11-25")}
+    a = {"date": "2026-12-02"}                       # a later Wednesday is a fair reading: kept
+    assert fix_date(a, "next Wednesday", t) == {} and fix_date(a, "मंगलवार या बुधवार?", t) == {}
     print("numbers ok")

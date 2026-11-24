@@ -119,6 +119,7 @@ class Agent:
     toolsets: tuple                 # skill modules (app/skills/<name>.py) this agent may use; "*" = all
     vad: dict = field(default_factory=lambda: {"type": "server_vad", "silence_duration_ms": 500})
     filler: bool = True
+    greeting: str = ""              # said first, once the call connects ({clinic} filled in); "" = wait for the caller
 
 
 @dataclass(frozen=True)

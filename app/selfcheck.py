@@ -11,7 +11,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from websockets.asyncio.client import connect
@@ -78,7 +78,8 @@ def check_doctor_match():
         execute = lambda self, sql, args: self  # noqa: E731
         fetchall = lambda self: rows  # noqa: E731
     for q, want in [("Dr. Doc1350 Clinic Doctor", 3), ("Doc1350", 3), ("Doc1190Verified", 2), ("Meera Iyer", 1),
-                    ("the pediatrician", 4), ("general medicine", None), ("Meera", None)]:
+                    ("the pediatrician", 4), ("general medicine", None), ("Meera", None),
+                    ("डॉक्टर मीरा अय्यर", 1), ("मीरा राव", 4), ("मीरा", None)]:  # names the model sent in Devanagari
         d, err = find_doctor(Rows(), {"doctors": ""}, q)
         assert (d and d["id"]) == want and (d or err["status"] == "which_doctor"), (q, d, err)
     print("doctor match ok")
@@ -167,6 +168,10 @@ async def check_session():
     tue, wed = store.next_weekday("Tuesday"), store.next_weekday("Wednesday")
 
     assert call("my_appointments")["status"] == "needs_verification"                    # guard, in code
+    fri = store.next_weekday("Friday")                                                  # Dr Shah: Tue + Thu only
+    closed = call("find_slots", doctor="Dr Shah", date=f"{fri}")
+    assert closed["status"] == "closed" and closed["next_open"]["date_iso"] == f"{store.next_weekday('Tuesday', fri)}", closed
+    assert "Wednesday" in ses.instructions().split("Tools:")[0]                          # the calendar, not arithmetic
     assert "unknown tool" in call("get_order_status", order_id="A123")["error"]        # not this agent's tool
     assert call("verify_patient", phone="9000000000")["status"] == "not_found"
     out = call("verify_patient", phone="98123 45678")
@@ -198,10 +203,15 @@ async def check_session():
         wrong = await heard.run_tool("verify_patient", json.dumps({"phone": "98450012367"}))
         heard.hear("user_said", "nine eight four five zero one two three six six")
         kept = await heard.run_tool("verify_patient", json.dumps({"phone": "9845012366"}))  # plausible: kept
+        day = store.next_weekday("Tuesday", fixed.date() + timedelta(days=7))           # said "<day> <month>"
+        heard.hear("user_said", f"{day.day} {day:%B} को डॉक्टर शाह के स्लॉट?")
+        slots = await heard.run_tool("find_slots", json.dumps({"doctor": "Shah", "date": f"{day + timedelta(days=7)}"}))
+        assert slots["date"] == f"{day:%A} {day.day} {day:%B %Y}", slots                # looked up the day they said
         return wrong, kept
     wrong, kept = _sync(misheard())
     assert wrong["status"] == "code_sent" and kept["status"] == "not_found", (wrong, kept)
-    print("session ok: guards, codes, the SMS cap, digits from the caller's words")
+    assert wrong["reply_in"] == "Hindi" and kept["reply_in"] == "English", (wrong, kept)  # the caller's language
+    print("session ok: guards, codes, the SMS cap, digits from the caller's words, the caller's language")
 
 
 async def check_resume():
@@ -539,14 +549,16 @@ async def check_webrtc():
         return list(sent)
 
     first = realtime.TranscriptFirst(Wire(), wait_s=0.2)
-    assert await turn("What are your hours", "What are your hours?") == ["response.create"]       # no digits: at once
+    assert await turn("What are your hours", "What are your hours?") == ["response.create",       # no digits: at once,
+                                                                         "conversation.item.create"]  # words after
     assert await turn("नौ आठ चार", "नौ आठ चार पाँच") == ["conversation.item.create", "response.create"]  # digits: words first
+    assert await turn("एक दिसंबर को स्लॉट", "एक दिसंबर को स्लॉट?") == ["conversation.item.create", "response.create"]  # a date too
     assert await turn("", "") == []                                                                # noise: no reply
     assert await turn("", ..., wait=0.3) == ["response.create"]                                    # no transcript: reply anyway
 
     port, up = 8785, 8786
     s = test_settings({"APP__ENGINE__KIND": '"webrtc"', "APP__SERVER__PORT": str(port)})
-    calls, hung, outputs, notes = [], [], [], []
+    calls, hung, outputs, notes, greetings = [], [], [], [], []
     call = {"type": "function_call", "name": "verify_patient", "call_id": "c1",
             "arguments": json.dumps({"phone": "9845012367"})}
 
@@ -564,6 +576,8 @@ async def check_webrtc():
                     outputs.append(m["item"]["output"])
                 elif m["type"] == "conversation.item.create":
                     notes.append(m["item"]["content"][0]["text"])
+                elif m["type"] == "response.create" and "instructions" in m.get("response", {}):
+                    greetings.append(m["response"]["instructions"])  # the opening line: nothing else to play
                 elif m["type"] == "response.create":
                     for e in ({"type": "output_audio_buffer.started"},
                               {"type": "response.output_audio_transcript.done", "transcript": "Please read me the code."},
@@ -591,6 +605,7 @@ async def check_webrtc():
             first = json.loads(await ws.recv())
             assert first == {"type": "status", "state": "connecting", "engine": "webrtc"}, first
             await ws.send(json.dumps({"sdp": "v=0 offer"}))
+            await ws.send(json.dumps({"connected": True}))  # the page: audio connection up
             while True:
                 m = json.loads(await asyncio.wait_for(ws.recv(), 10))
                 msgs.append(m)
@@ -616,8 +631,9 @@ async def check_webrtc():
     assert session["audio"]["input"]["transcription"]["model"], session  # captions configured
     assert session["audio"]["input"]["turn_detection"]["create_response"] is False, session  # transcript first
     assert any("9845012367" in n for n in notes), notes  # the caller's words reached the model, digits as digits
+    assert greetings and "Welcome to City Care Clinic" in greetings[0], greetings  # the desk spoke first
     print("webrtc ok: offer -> call with prompt + tools, live captions, transcript to the model, answer back, tool call on the side connection, "
-          "page events + SMS, hung up on leave")
+          "page events + SMS, greeting first, hung up on leave")
 
 
 async def check_all():

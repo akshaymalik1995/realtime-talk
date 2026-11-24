@@ -11,9 +11,28 @@ All functions take a store (app/store.py Sqlite, app/docassist.py DocAssistStore
 statements. The rules are the same for every store; only the SQL differs. They return plain dicts for the model.
 """
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
-STOP_WORDS = {"dr", "doctor", "the", "a", "with", "for", "and", "specialist"}
+STOP_WORDS = {"dr", "doctor", "the", "a", "with", "for", "and", "specialist", "डॉक्टर", "डॉ", "डा", "डाक्टर"}
+# Names the model sends in Devanagari ("विकास शाह") are compared to the English names by their consonants:
+# विकास and Vikas are both v-k-s. ponytail: names only (specialties in Hindi don't reduce alike); a real
+# transliteration library if names ever collide this way.
+_DEV = dict(zip("कखगघङचछजझञटठडढणतथदधनपफबभमयरलवशषसह", "kkggnccjjnttddnttddnpfbbmyrlvsssh"))
+assert len(_DEV) == 33
+_LATIN = [("sh", "s"), ("ch", "c"), ("ph", "f"), ("kh", "k"), ("gh", "g"), ("th", "t"), ("dh", "d"), ("bh", "b"),
+          ("ck", "k"), ("w", "v"), ("z", "j"), ("q", "k"), ("x", "ks")]
+
+
+def _consonants(word: str) -> str:
+    """Spelling-independent skeleton of a name: its consonants in order, repeats merged."""
+    if re.search(r"[ऀ-ॿ]", word):
+        out = "".join(_DEV.get(ch, "") for ch in word)  # vowel signs, virama and nukta drop out
+    else:
+        for a, b in _LATIN:
+            word = word.replace(a, b)
+        out = re.sub(r"[aeiou0-9]", "", word)
+    out = re.sub(r"(.)\1+", r"\1", out)
+    return out[:-1] if out.endswith("v") and len(out) > 1 else out  # राव (r-v) = Rao (r); Dev = देव either way
 
 
 def fmt_time(minutes: int) -> str:
@@ -62,9 +81,12 @@ def doctors(store) -> list[dict]:
 
 def find_doctor(c, sql, query: str) -> tuple[dict | None, dict | None]:
     """Resolve what the caller said ("Dr Kapoor", "the pediatrician", "cardiology") to exactly one doctor."""
-    words = [w for w in re.findall(r"[a-z0-9]+", query.lower()) if w not in STOP_WORDS and len(w) >= 3]
-    # prefixes, so "pediatrician" matches "pediatrics" and "cardio" matches "cardiology"
-    hits = lambda d: sum(any(dw.startswith(w[:6]) for dw in d["_words"]) for w in words)  # noqa: E731
+    words = [w for w in re.findall(r"[a-z0-9]+|[\u0900-\u0963\u0966-\u097F]+", query.lower())
+             if w not in STOP_WORDS and (len(w) >= 3 or not w.isascii())]
+    # prefixes, so "pediatrician" matches "pediatrics" and "cardio" matches "cardiology"; Devanagari by consonants
+    match = lambda w, dw: (_consonants(w) == _consonants(dw) and len(_consonants(w)) >= 1 if not w.isascii()  # noqa: E731
+                           else dw.startswith(w[:6]))
+    hits = lambda d: sum(any(match(w, dw) for dw in d["_words"]) for w in words)  # noqa: E731
     docs = _doctors(c, sql)
     best = max((hits(d) for d in docs), default=0)
     found = [d for d in docs if best and hits(d) == best]  # the most words matched wins: "Meera Iyer" over "Meera"
@@ -72,7 +94,9 @@ def find_doctor(c, sql, query: str) -> tuple[dict | None, dict | None]:
         return found[0], None
     names = [f"{d['name']} ({d['specialty']})" for d in docs]
     if not found:
-        return None, {"status": "unknown_doctor", "problem": f"no doctor matches '{query}'", "doctors": names}
+        return None, {"status": "unknown_doctor", "problem": f"no doctor matches '{query}'", "doctors": names,
+                      "next": "If the caller means one of these, call again with the name exactly as written here "
+                              "(it was likely sent in another script); otherwise tell them who is available."}
     return None, {"status": "which_doctor", "problem": f"'{query}' matches several doctors",
                   "doctors": [f"{d['name']} ({d['specialty']})" for d in found]}
 
@@ -108,6 +132,17 @@ def _slots(c, sql, doc: dict, day: date, now: datetime) -> dict:
     return {"free": free, "taken": taken}
 
 
+def _next_open(c, sql, doc: dict, day: date, now: datetime, within: int = 30) -> dict | None:
+    """The doctor's first working day after `day` (and not before today) with a free slot, and its first times.
+    The model is bad at calendars: it offered a Saturday to a doctor who works Tuesdays and Thursdays."""
+    d = max(day, now.date() - timedelta(days=1))
+    for _ in range(within):
+        d += timedelta(days=1)
+        if f"{d:%A}" in doc["days"] and (s := _slots(c, sql, doc, d, now)).get("free"):
+            return {"date": fmt_day(d), "date_iso": d.isoformat(), "free": [fmt_time(m) for m in s["free"][:3]]}
+    return None
+
+
 def find_slots(store, doctor: str, day_s: str, now: datetime | None = None) -> dict:
     now = now or datetime.now()
     day = parse_day(day_s)
@@ -118,12 +153,16 @@ def find_slots(store, doctor: str, day_s: str, now: datetime | None = None) -> d
         if problem:
             return problem
         s = _slots(c, store.SQL, doc, day, now)
+        later = None if s.get("free") else _next_open(c, store.SQL, doc, day, now)
+    offer = {"next_open": later, "next": "Say so, then offer next_open: its date and its times."} if later else {}
     if "closed" in s:
-        return {"status": "closed", "doctor": doc["name"], "date": fmt_day(day), "problem": s["closed"]}
+        return {"status": "closed", "doctor": doc["name"], "date": fmt_day(day), "problem": s["closed"], **offer}
+    if not s["free"]:
+        return {"status": "full", "doctor": doc["name"], "date": fmt_day(day), "problem": "no free time that day", **offer}
     return {"status": "ok", "doctor": doc["name"], "specialty": doc["specialty"], "date": fmt_day(day),
             "free": [fmt_time(m) for m in s["free"]], "free_count": len(s["free"]),
-            "next": "If the caller already asked for a time that is in free, confirm that one; otherwise offer two "
-                    "or three free times. Never read the whole list."}
+            "next": "Say the date (weekday and day) with the times. If the caller already asked for a time that is "
+                    "in free, confirm that one; otherwise offer two or three free times. Never read the whole list."}
 
 
 def book(store, patient_id: int, doctor: str, day_s: str, time_s: str, reason: str,

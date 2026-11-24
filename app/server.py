@@ -127,6 +127,7 @@ class App:
         first = s.engine.transcript_first and bool(s.openai.transcribe_model) and s.engine.kind != "cascade"
         turns = {**session.config.vad, "create_response": False} if first and session.config.vad else session.config.vad
         offers: asyncio.Queue = asyncio.Queue(maxsize=1)  # webrtc engine: the page's SDP offer
+        media_up = asyncio.Event()                         # webrtc engine: the page's audio connection is up
 
         async def to_browser():
             while (m := await out.get()) is not None:
@@ -150,6 +151,8 @@ class App:
                 elif isinstance(c, dict) and set(c) == {"sdp"} and isinstance(c["sdp"], str) \
                         and 0 < len(c["sdp"]) <= webrtc.MAX_SDP and offers.empty():
                     offers.put_nowait(c["sdp"])
+                elif c == {"connected": True}:
+                    media_up.set()
                 else:
                     log.warning("ignored browser message %.80r", m)
 
@@ -185,7 +188,8 @@ class App:
                     s, self.key, offers, lambda sdp: out.put(({"type": "rtc_answer", "sdp": sdp})), mic(),
                     seconds=s.server.session_limit_s, instructions=session.instructions(), tools=session.specs(),
                     run_tool=session.run_tool, vad=turns, on_note=on_note, on_ready=ready,
-                    max_resumes=s.resilience.max_resumes, transcript_first=first, **self.rtc)
+                    max_resumes=s.resilience.max_resumes, transcript_first=first, greeting=session.greeting(),
+                    media_up=media_up, **self.rtc)
             elif s.engine.kind == "cascade":
                 await cascade.converse(
                     self.parts, s, self.key, mic(), spk, seconds=s.server.session_limit_s,

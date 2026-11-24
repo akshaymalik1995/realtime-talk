@@ -58,6 +58,7 @@ filler_audio = "assets/filler_marin.pcm"
 prompt = "prompts/front_desk.md"
 toolsets = ["identity", "registration", "appointments", "clinic_info"]
 vad = { type = "server_vad", silence_duration_ms = 900 }   # dictation has pauses: don't cut callers off
+greeting = "Namaste! Welcome to {clinic}. How may I help you?"   # the desk speaks first
 
 [agents.support]
 prompt = "prompts/support.md"

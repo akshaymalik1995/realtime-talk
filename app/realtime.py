@@ -17,7 +17,7 @@ import time
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from app.domain.numbers import spoken_digits
+from app.domain.numbers import DATE_SAID, spoken_digits
 from app.metrics import METRICS
 from app.settings import Settings
 
@@ -137,7 +137,8 @@ class TranscriptFirst:
             self.fallback.cancel()
             self.fallback = None
         words = self.partial.strip()
-        if words and not any(c.isdigit() for c in spoken_digits(words)):
+        # digits or a date ("एक दिसंबर": the model heard 8 December where the transcript had 1) are checked first
+        if words and not any(c.isdigit() for c in spoken_digits(words)) and not DATE_SAID.search(words):
             asyncio.create_task(send(self.ws, {"type": "response.create"}))  # nothing to check: answer now
             return
         self.fallback = asyncio.create_task(self._reply_anyway())
@@ -149,7 +150,10 @@ class TranscriptFirst:
 
     async def heard(self, text: str | None):
         """The transcript arrived (None: transcription failed)."""
-        if not self.fallback:  # not a turn we are holding (or the fallback already answered it)
+        if not self.fallback:  # a turn already answered by voice: its words still join the conversation, so the
+            if text:           # turns after it work from what the caller sees on screen (no wait, no reply)
+                await send(self.ws, _message("system", f"Transcript of the caller's last words, as shown to them: "
+                                                       f"{spoken_digits(text)}"))
             return
         self.fallback.cancel()
         self.fallback = None
@@ -158,6 +162,12 @@ class TranscriptFirst:
                                                    f"and spellings): {spoken_digits(text)}"))
         if text or text is None:
             await send(self.ws, {"type": "response.create"})
+
+
+def greet(text: str) -> dict:
+    """The model says the opening line, word for word (a response with its own instructions)."""
+    return {"type": "response.create", "response": {
+        "instructions": f"Greet the caller now with exactly this line, word for word, and nothing else: {text}"}}
 
 
 def _message(role: str, text: str) -> dict:

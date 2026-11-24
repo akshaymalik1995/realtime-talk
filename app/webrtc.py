@@ -16,6 +16,7 @@ truncation happen inside OpenAI (it knows what was played). The filler clip is s
 "let me check" covers tool calls.
 """
 import asyncio
+import contextlib
 import json
 import logging
 import time
@@ -78,7 +79,8 @@ async def attach(s, key, call_id):
 async def converse(s, key, offers: asyncio.Queue, send_answer, chunks, seconds: float, instructions: str,
                    tools: list, run_tool, vad: dict | None = None, on_note=None, on_ready=None,
                    stop: asyncio.Event | None = None, max_resumes: int = 2, create=None, connect=None,
-                   hangup=None, transcript_first: bool = False) -> list[tuple]:
+                   hangup=None, transcript_first: bool = False, greeting: str = "",
+                   media_up: asyncio.Event | None = None) -> list[tuple]:
     """One WebRTC conversation. offers: the page's SDP offer arrives here; send_answer(sdp) returns OpenAI's.
     chunks: the page's message stream, drained only to notice it leaving. create/connect: injectable for tests."""
     create, connect = create or create_call, connect or attach
@@ -109,7 +111,7 @@ async def converse(s, key, offers: asyncio.Queue, send_answer, chunks, seconds: 
         await send_answer(answer)
         note("call", call_id)
 
-        speaking, resumes = False, 0
+        speaking, resumes, hello = False, 0, []
 
         async def events():
             nonlocal speaking, resumes
@@ -117,6 +119,13 @@ async def converse(s, key, offers: asyncio.Queue, send_answer, chunks, seconds: 
             first = realtime.TranscriptFirst(ws) if transcript_first else None
             if on_ready:
                 on_ready()
+            if greeting:  # the desk speaks first, once the page says audio flows (else its start would be lost)
+                async def say_hello():
+                    if media_up:
+                        with contextlib.suppress(asyncio.TimeoutError):
+                            await asyncio.wait_for(media_up.wait(), 10)
+                    await realtime.send(ws, realtime.greet(greeting))
+                hello.append(asyncio.create_task(say_hello()))
             while True:
                 try:
                     async for raw in ws:

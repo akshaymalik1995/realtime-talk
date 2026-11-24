@@ -229,6 +229,10 @@ async function startRtc() {
   pc.createDataChannel('oai-events');
   pc.onconnectionstatechange = () => {
     if (pc && pc.connectionState === 'failed') { showError('The audio connection failed.', true); stop('error'); }
+    if (pc && pc.connectionState === 'connected' && !timerId) {  // audio flows: the call starts now
+      startTimer();
+      if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ connected: true }));  // server: greet now
+    }
   };
   await pc.setLocalDescription(await pc.createOffer());
   ws.send(JSON.stringify({ sdp: pc.localDescription.sdp }));
@@ -470,6 +474,7 @@ function onMessage(e) {
   else if (m.type === 'rtc_answer') pc?.setRemoteDescription({ type: 'answer', sdp: m.sdp });
   else if (m.type === 'status' && m.state === 'ready') {
     ready = true; setStatus('listening');
+    if (engine !== 'webrtc') startTimer();  // webrtc: once its audio connection is up
     activity('info', 'Connected', `limit ${m.limit_s / 60} min`);
   }
   else if (m.type === 'ended') { activity('info', 'Ended', m.reason); stop('ended'); }
@@ -530,13 +535,20 @@ async function start() {
   ws.onclose = () => { if (ws) stop(ready ? 'ended' : 'error'); };
   ws.onerror = () => showError('Lost the connection to the server.', true);
 
-  t0 = performance.now();
-  timerId = setInterval(() => {
-    const s = Math.floor((performance.now() - t0) / 1000);
-    $('timer').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-  }, 500);
+  $('timer').textContent = '';
   talkButton(true);
   $('talk').disabled = false;
+}
+
+// the call timer counts from the moment the call is connected, not from the button press
+function startTimer() {
+  t0 = performance.now();
+  const tick = () => {
+    const s = Math.floor((performance.now() - t0) / 1000);
+    $('timer').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  };
+  tick();
+  timerId = setInterval(tick, 500);
 }
 
 function stop(next = 'ended') {
@@ -549,6 +561,7 @@ function stop(next = 'ended') {
   ctx = stream = player = pc = rtcAudio = null;
   engine = 'realtime';
   clearInterval(timerId);
+  timerId = null;
   $('level').style.width = '0%';
   $('talk-sub').textContent = 'Headphones recommended';
   talkButton(false);
