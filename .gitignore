@@ -10,3 +10,19 @@ demo_skills/
 .flashback/
 .wwebjs_cache/
 .env
+
+# notebooks and the code that only serves them: kept locally, not shared
+*.ipynb
+course/
+live/
+
+# secrets: keys, tokens, certificates, credential files (keys come from the environment, never the repo)
+.env*
+*.ini
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets*
+credentials*

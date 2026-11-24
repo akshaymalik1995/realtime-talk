@@ -1,6 +1,25 @@
 # Realtime Talk: a voice front desk on OpenAI Realtime
 
-`app/` is the production backend. `live/` + notebooks 01–07 are how it was explored; `course/` rebuilds `app/` step by step.
+A clinic's phone front desk that patients talk to: it verifies them by SMS code, registers new patients, finds
+doctors' free slots and books or cancels appointments, in English or Hindi. It runs on the demo clinic below, or on
+DocAssist's database (see DocAssist).
+
+## Try the demo
+
+```
+python -m venv .venv && .venv\Scripts\pip install -r requirements.txt
+set OPENAI_API_KEY=sk-...            # your own key; never commit it
+.venv\Scripts\python -m app          # open http://127.0.0.1:8000 in Chrome, allow the microphone
+```
+
+Press **Start call**; the desk greets you. The demo clinic has three patients (SMS codes appear on the page, under
+Text messages): Vikram Nair `98450 12367`, and Asha Sharma with her son Rohan on `98123 45678`. Try:
+
+- "I want to see my appointments." Then give the number and read back the code.
+- "Which doctors do you have?" / "डॉक्टर विकास शाह 26 नवंबर के बाद कब फ्री हैं?"
+- "Book Dr. Kapoor on Friday at 11." Or register as a new patient with your own name.
+
+Headphones help (a laptop speaker can echo into the microphone). Phone on the same Wi-Fi: `python lan.py`.
 
 ## Run
 
